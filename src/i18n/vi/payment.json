@@ -1,0 +1,10 @@
+{
+  "order_not_found": "Không tìm thấy đơn hàng",
+  "not_your_order": "Không phải đơn hàng của bạn",
+  "order_already_processed": "Đơn hàng đã được xử lý",
+  "cash_no_payment_creation": "Đơn hàng tiền mặt không cần tạo thanh toán",
+  "cash_no_qr": "Đơn hàng tiền mặt không cần mã QR",
+  "not_found": "Không tìm thấy thanh toán",
+  "cash_no_payment_record": "Đơn hàng tiền mặt không có bản ghi thanh toán",
+  "already_verified": "Thanh toán đã được xác minh"
+}

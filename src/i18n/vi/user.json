@@ -1,0 +1,16 @@
+{
+  "not_found": "Không tìm thấy người dùng",
+  "profile_retrieved": "Lấy thông tin cá nhân thành công",
+  "profile_updated": "Cập nhật thông tin cá nhân thành công",
+  "users_retrieved": "Lấy danh sách người dùng thành công",
+  "user_retrieved": "Lấy thông tin người dùng thành công",
+  "role_updated": "Cập nhật vai trò người dùng thành công",
+  "permissions_updated": "Cập nhật quyền người dùng thành công",
+  "account_activated": "Kích hoạt tài khoản thành công",
+  "account_deactivated": "Vô hiệu hóa tài khoản thành công",
+  "password_changed": "Đổi mật khẩu thành công",
+  "current_password_incorrect": "Mật khẩu hiện tại không đúng",
+  "cannot_change_own_password_as_admin": "Không thể đổi mật khẩu của chính mình với quyền admin",
+  "cannot_delete_yourself": "Không thể xóa tài khoản của chính mình",
+  "user_deleted": "Xóa người dùng thành công"
+}

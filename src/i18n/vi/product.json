@@ -1,0 +1,18 @@
+{
+  "not_found": "Không tìm thấy sản phẩm",
+  "already_locked": "Sản phẩm này đang được chỉnh sửa bởi {email}",
+  "cannot_delete_with_orders": "Không thể xoá sản phẩm vì đang tồn tại trong đơn hàng",
+
+  "create_success": "Tạo sản phẩm thành công",
+  "update_success": "Cập nhật sản phẩm thành công",
+  "delete_success": "Xoá sản phẩm thành công",
+
+  "slug_exists_auto_generated": "Slug sản phẩm đã tồn tại, slug mới đã được tạo tự động",
+
+  "out_of_stock": "Sản phẩm hiện đang hết hàng",
+  "permission_denied": "Bạn không có quyền chỉnh sửa sản phẩm này",
+  "insufficient_stock": "Sản phẩm {name} không đủ số lượng tồn",
+  "not_available": "Sản phẩm {name} hiện không khả dụng",
+  "not_locked_by_you": "Bạn không sở hữu quyền chỉnh sửa sản phẩm này",
+  "lock_expired": "Quyền chỉnh sửa của bạn đã hết hạn"
+}

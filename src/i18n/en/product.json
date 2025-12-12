@@ -1,0 +1,18 @@
+{
+  "not_found": "Product not found",
+  "already_locked": "This product is currently being edited by {email}",
+  "cannot_delete_with_orders": "Cannot delete this product because it is included in existing orders",
+
+  "create_success": "Product created successfully",
+  "update_success": "Product updated successfully",
+  "delete_success": "Product deleted successfully",
+
+  "slug_exists_auto_generated": "Product slug exists, a unique slug has been generated automatically",
+
+  "out_of_stock": "This product is currently out of stock",
+  "permission_denied": "You don't have permission to modify this product",
+  "insufficient_stock": "Insufficient stock for product: {name}",
+  "not_available": "The product {name} is not available",
+  "not_locked_by_you": "You do not own the lock for this product",
+  "lock_expired": "Your edit lock has expired"
+}

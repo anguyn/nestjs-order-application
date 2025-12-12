@@ -1,0 +1,11 @@
+{
+  "not_found": "Không tìm thấy đơn hàng",
+  "cannot_cancel": "Đơn hàng này không thể hủy",
+  "cancel_success": "Hủy đơn hàng thành công",
+  "created_success": "Tạo đơn hàng thành công",
+  "updated_success": "Cập nhật đơn hàng thành công",
+  "invalid_status": "Trạng thái đơn hàng không hợp lệ",
+  "payment_failed": "Thanh toán thất bại",
+  "out_of_stock": "Một số sản phẩm đã hết hàng",
+  "processing": "Đơn hàng đang được xử lý"
+}

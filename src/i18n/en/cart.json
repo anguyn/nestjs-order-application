@@ -1,0 +1,9 @@
+{
+  "item_not_found": "Cart item not found",
+  "insufficient_stock": "Requested quantity exceeds available stock",
+  "cart_empty": "Your cart is currently empty",
+  "cleared_success": "Cart cleared successfully",
+  "removed_success": "Item removed from cart",
+  "updated_success": "Cart updated successfully",
+  "added_success": "Item added to cart"
+}

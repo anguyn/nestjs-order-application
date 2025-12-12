@@ -1,0 +1,87 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: voucher_postgres_dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: nestdb
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - voucher_network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U admin -d nestdb" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres -c shared_buffers=256MB -c max_connections=200 -c log_statement=all -c log_duration=on
+
+  redis:
+    image: redis:7-alpine
+    container_name: voucher_redis_dev
+    restart: unless-stopped
+    command: redis-server --requirepass 123456 --appendonly yes --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - voucher_network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "123456", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Optional: Redis Commander (GUI for Redis)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: voucher_redis_commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:123456
+    ports:
+      - "8081:8081"
+    networks:
+      - voucher_network
+    depends_on:
+      - redis
+
+  # Optional: pgAdmin (GUI for PostgreSQL)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: voucher_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - voucher_network
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  voucher_network:
+    driver: bridge

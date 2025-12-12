@@ -1,0 +1,16 @@
+{
+  "not_found": "User not found",
+  "profile_retrieved": "Profile retrieved successfully",
+  "profile_updated": "Profile updated successfully",
+  "users_retrieved": "Users retrieved successfully",
+  "user_retrieved": "User details retrieved successfully",
+  "role_updated": "User role updated successfully",
+  "permissions_updated": "User permissions updated successfully",
+  "account_activated": "Account activated successfully",
+  "account_deactivated": "Account deactivated successfully",
+  "password_changed": "Password changed successfully",
+  "current_password_incorrect": "Current password is incorrect",
+  "cannot_change_own_password_as_admin": "Cannot change your own password as admin, use profile update instead",
+  "cannot_delete_yourself": "Cannot delete your own account",
+  "user_deleted": "User deleted successfully"
+}

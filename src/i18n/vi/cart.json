@@ -1,0 +1,9 @@
+{
+  "item_not_found": "Không tìm thấy sản phẩm trong giỏ hàng",
+  "insufficient_stock": "Số lượng yêu cầu vượt quá tồn kho",
+  "cart_empty": "Giỏ hàng hiện đang trống",
+  "cleared_success": "Đã xóa toàn bộ giỏ hàng thành công",
+  "removed_success": "Đã xóa sản phẩm khỏi giỏ hàng",
+  "updated_success": "Cập nhật giỏ hàng thành công",
+  "added_success": "Đã thêm sản phẩm vào giỏ hàng"
+}

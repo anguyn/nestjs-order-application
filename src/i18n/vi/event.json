@@ -1,0 +1,18 @@
+{
+  "created": "Tạo sự kiện thành công",
+  "updated": "Cập nhật sự kiện thành công",
+  "deleted": "Xóa sự kiện thành công",
+  "list_retrieved": "Lấy danh sách sự kiện thành công",
+  "detail_retrieved": "Lấy chi tiết sự kiện thành công",
+  "not_found": "Không tìm thấy sự kiện",
+  "not_active": "Sự kiện không hoạt động",
+  "not_started": "Sự kiện chưa bắt đầu",
+  "ended": "Sự kiện đã kết thúc",
+  "cannot_delete_with_vouchers": "Không thể xóa sự kiện có voucher tồn tại",
+  "lock_acquired": "Đã lấy quyền chỉnh sửa thành công",
+  "lock_released": "Đã giải phóng quyền chỉnh sửa thành công",
+  "lock_maintained": "Gia hạn quyền chỉnh sửa thành công",
+  "already_locked": "Sự kiện hiện đang được chỉnh sửa bởi {email}",
+  "not_locked_by_you": "Bạn không sở hữu quyền chỉnh sửa sự kiện này",
+  "lock_expired": "Quyền chỉnh sửa của bạn đã hết hạn"
+}

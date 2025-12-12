@@ -1,0 +1,18 @@
+{
+  "created": "Event created successfully",
+  "updated": "Event updated successfully",
+  "deleted": "Event deleted successfully",
+  "list_retrieved": "Events retrieved successfully",
+  "detail_retrieved": "Event details retrieved successfully",
+  "not_found": "Event not found",
+  "not_active": "Event is not active",
+  "not_started": "Event has not started yet",
+  "ended": "Event has ended",
+  "cannot_delete_with_vouchers": "Cannot delete event with existing vouchers",
+  "lock_acquired": "Edit lock acquired successfully",
+  "lock_released": "Edit lock released successfully",
+  "lock_maintained": "Edit lock extended successfully",
+  "already_locked": "Event is currently being edited by {email}",
+  "not_locked_by_you": "You do not own the lock for this event",
+  "lock_expired": "Your edit lock has expired"
+}

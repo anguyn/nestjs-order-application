@@ -1,0 +1,33 @@
+{
+  "not_found": "Không tìm thấy voucher",
+  "not_active": "Voucher này không còn hoạt động",
+  "expired": "Voucher đã hết hạn",
+  "invalid": "Voucher không hợp lệ",
+  "min_order_not_met": "Không đạt giá trị đơn hàng tối thiểu (yêu cầu: {amount})",
+  "not_eligible": "Bạn không đủ điều kiện sử dụng voucher này",
+  "already_used": "Voucher đã được sử dụng",
+  "usage_limit_reached": "Đã đạt giới hạn số lần sử dụng voucher",
+  "no_vouchers_available": "Không còn voucher để nhận",
+  "already_claimed": "Bạn đã nhận voucher này rồi",
+  "code_generation_failed": "Tạo mã voucher thất bại. Vui lòng thử lại sau",
+
+  "create_success": "Tạo voucher thành công",
+  "issue_success": "Nhận voucher thành công",
+  "validate_success": "Voucher hợp lệ",
+  "apply_success": "Áp dụng voucher thành công",
+
+  "multi_use_only": "Voucher này chỉ dành cho sử dụng nhiều lần",
+  "single_use_only": "Voucher này chỉ được sử dụng một lần",
+  "max_discount_applied": "Đã áp dụng mức giảm tối đa",
+
+  "template_not_found": "Không tìm thấy mẫu voucher.",
+  "template_not_active": "Mẫu voucher này hiện không hoạt động.",
+  "template_sold_out": "Mẫu voucher này đã được phát hết.",
+  "event_sold_out": "Sự kiện này đã hết số lượng voucher.",
+  "max_per_user_reached": "Bạn đã đạt giới hạn số lần nhận voucher này.",
+  "not_yours": "Voucher này không thuộc về bạn.",
+  "cannot_revoke_used": "Không thể thu hồi voucher đã sử dụng.",
+  "template_code_exists": "Mã voucher template đã tồn tại.",
+  "invalid_percentage": "Giá trị phần trăm phải nằm trong khoảng 0 đến 100.",
+  "multi_use_requires_max_usage": "Voucher dùng nhiều lần phải có số lần sử dụng tối đa."
+}

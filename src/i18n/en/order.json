@@ -1,0 +1,11 @@
+{
+  "not_found": "Order not found",
+  "cannot_cancel": "This order cannot be canceled",
+  "cancel_success": "Order has been cancelled successfully",
+  "created_success": "Order created successfully",
+  "updated_success": "Order updated successfully",
+  "invalid_status": "Invalid order status",
+  "payment_failed": "Payment failed",
+  "out_of_stock": "Some products are out of stock",
+  "processing": "Your order is being processed"
+}

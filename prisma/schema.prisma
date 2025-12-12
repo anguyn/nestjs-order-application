@@ -1,0 +1,475 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "commonjs"
+  engineType   = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Language {
+  EN
+  VI
+}
+
+model User {
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  password            String
+  firstName           String
+  lastName            String
+  phone               String?
+  role                UserRole  @default(USER)
+  permissions         String[]  @default([])
+  language            Language  @default(EN)
+  isActive            Boolean   @default(true)
+  isEmailVerified     Boolean   @default(false)
+  emailVerifyToken    String?
+  emailVerifyExpiry   DateTime?
+  resetPasswordToken  String?
+  resetPasswordExpiry DateTime?
+  lastLoginAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  products         Product[]
+  events           Event[]
+  carts            Cart[]
+  orders           Order[]
+  refreshTokens    RefreshToken[]
+  editLocks        EditLock[]
+  voucherUsages    VoucherUsage[]
+  addresses        Address[]
+  voucherInstances VoucherInstance[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  expiresAt  DateTime
+  deviceInfo String?
+  ipAddress  String?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model Address {
+  id        String  @id @default(uuid())
+  userId    String
+  fullName  String
+  phone     String
+  address   String
+  ward      String
+  district  String
+  city      String
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+enum UserRole {
+  ADMIN
+  MERCHANT
+  USER
+}
+
+model Product {
+  id           String        @id @default(uuid())
+  name         String
+  slug         String        @unique
+  description  String        @db.Text
+  price        Decimal       @db.Decimal(10, 2)
+  comparePrice Decimal?      @db.Decimal(10, 2)
+  stock        Int           @default(0)
+  sku          String?       @unique
+  images       String[]      @default([])
+  status       ProductStatus @default(DRAFT)
+  createdBy    String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  creator    User        @relation(fields: [createdBy], references: [id])
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+  editLocks  EditLock[]
+
+  @@index([slug])
+  @@index([status])
+  @@index([createdBy])
+  @@map("products")
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  OUT_OF_STOCK
+}
+
+model Event {
+  id          String  @id @default(uuid())
+  slug        String  @unique
+  title       String
+  description String?
+
+  // Thời gian diễn ra event
+  startDate DateTime
+  endDate   DateTime
+
+  // Quota tổng của event (tổng số voucher có thể phát hành)
+  maxVouchers Int
+  issuedCount Int @default(0) // Đếm tổng voucher đã phát (từ TẤT CẢ templates)
+
+  isActive  Boolean  @default(true)
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  creator          User              @relation(fields: [createdBy], references: [id])
+  voucherTemplates VoucherTemplate[] // 1 event có nhiều loại voucher
+  editLock         EditLock?
+
+  @@index([startDate, endDate])
+  @@index([createdBy])
+  @@map("events")
+}
+
+model VoucherTemplate {
+  id      String @id @default(uuid())
+  eventId String
+
+  // Metadata
+  name        String // "Voucher giảm 20%", "Free ship cho newbie"
+  description String?
+  code        String? @unique // Optional: code chung cho template (FREESHIP2024)
+
+  // Discount rules
+  discountType      DiscountType
+  discountValue     Decimal      @db.Decimal(10, 2)
+  minOrderAmount    Decimal?     @db.Decimal(10, 2)
+  maxDiscountAmount Decimal?     @db.Decimal(10, 2)
+
+  // Usage rules
+  type          VoucherType // SINGLE_USE, MULTI_USE, SPECIFIC_USER
+  maxUsageCount Int? // Null = unlimited cho MULTI_USE
+  maxPerUser    Int? // Giới hạn số lần 1 user có thể claim
+
+  // Quota của riêng template này
+  maxIssue    Int // Số lượng voucher tối đa có thể phát
+  issuedCount Int @default(0) // Đã phát bao nhiêu
+
+  // Target users (nếu có)
+  targetUserIds String[] @default([]) // Chỉ những user này mới claim được
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  event            Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  voucherInstances VoucherInstance[] // Template sinh ra nhiều instances
+
+  @@index([eventId])
+  @@index([code])
+  @@index([isActive])
+  @@map("voucher_templates")
+}
+
+model VoucherInstance {
+  id         String @id @default(uuid())
+  templateId String
+  userId     String
+
+  // Unique code cho voucher này
+  code String @unique
+
+  // Status
+  status    VoucherStatus @default(ACTIVE)
+  usedCount Int           @default(0)
+
+  // Timing
+  issuedAt   DateTime  @default(now())
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+
+  // Relations
+  template VoucherTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usages   VoucherUsage[]
+
+  @@index([templateId])
+  @@index([userId])
+  @@index([code])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("voucher_instances")
+}
+
+enum VoucherStatus {
+  ACTIVE // Còn hạn, chưa dùng hết
+  USED // Đã dùng hết (single-use hoặc multi-use hết lượt)
+  EXPIRED // Hết hạn
+  REVOKED // Bị thu hồi
+}
+
+model VoucherUsage {
+  id                String  @id @default(uuid())
+  voucherInstanceId String
+  userId            String
+  orderId           String
+  orderAmount       Decimal @db.Decimal(10, 2)
+  discountApplied   Decimal @db.Decimal(10, 2)
+
+  usedAt DateTime @default(now())
+
+  // Relations
+  voucherInstance VoucherInstance @relation(fields: [voucherInstanceId], references: [id], onDelete: Cascade)
+  user            User            @relation(fields: [userId], references: [id])
+  order           Order           @relation(fields: [orderId], references: [id])
+
+  @@index([voucherInstanceId])
+  @@index([userId])
+  @@index([orderId])
+  @@index([usedAt])
+  @@map("voucher_usages")
+}
+
+enum VoucherType {
+  SINGLE_USE
+  MULTI_USE
+  SPECIFIC_USER
+}
+
+model Cart {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String @id @default(uuid())
+  cartId    String
+  productId String
+  quantity  Int    @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, productId])
+  @@index([cartId])
+  @@index([productId])
+  @@map("cart_items")
+}
+
+model Order {
+  id          String @id @default(uuid())
+  orderNumber String @unique
+  userId      String
+
+  // Address - flexible: free text (priority) OR selected from saved addresses
+  addressText String? // User types address directly
+  addressId   String? // Optional: if user selects from saved addresses
+
+  // Amounts
+  subtotal         Decimal @db.Decimal(10, 2)
+  discountAmount   Decimal @default(0) @db.Decimal(10, 2)
+  shippingFee      Decimal @default(30000) @db.Decimal(10, 2) // Default 30,000đ
+  shippingDiscount Decimal @default(0) @db.Decimal(10, 2) // FREE_SHIPPING voucher discount
+  totalAmount      Decimal @db.Decimal(10, 2)
+
+  // Status & Payment
+  status        OrderStatus   @default(PENDING)
+  paymentMethod PaymentMethod // REQUIRED: VIETQR, BANK_TRANSFER, CASH
+
+  // Vouchers
+  vouchersApplied String[] @default([])
+
+  // Notes
+  customerNote String? @db.Text
+  adminNote    String? @db.Text
+
+  // Dates
+  expiresAt   DateTime? // 15 minutes to pay
+  paidAt      DateTime?
+  confirmedAt DateTime?
+  shippedAt   DateTime?
+  deliveredAt DateTime?
+  cancelledAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user          User           @relation(fields: [userId], references: [id])
+  address       Address?       @relation(fields: [addressId], references: [id])
+  items         OrderItem[]
+  payment       Payment?
+  voucherUsages VoucherUsage[]
+
+  @@index([userId])
+  @@index([orderNumber])
+  @@index([status])
+  @@index([createdAt])
+  @@index([expiresAt])
+  @@map("orders")
+}
+
+enum DiscountType {
+  FIXED // Giảm số tiền cố định
+  PERCENTAGE // Giảm phần trăm
+  FREE_SHIPPING // Miễn phí ship (chỉ trừ shippingFee)
+}
+
+model OrderItem {
+  id          String  @id @default(uuid())
+  orderId     String
+  productId   String
+  productName String
+  price       Decimal @db.Decimal(10, 2)
+  quantity    Int
+  subtotal    Decimal @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model Payment {
+  id      String        @id @default(uuid())
+  orderId String        @unique
+  amount  Decimal       @db.Decimal(10, 2)
+  method  PaymentMethod @default(VIETQR)
+  status  PaymentStatus @default(PENDING)
+
+  // Payment provider data
+  transactionId String? @unique
+  providerRef   String?
+  metadata      Json?
+
+  // QR Code data
+  qrContent  String? @db.Text
+  qrImageUrl String?
+
+  // Sepay data
+  sepayOrderCode  String? @unique
+  sepayGatewayUrl String?
+
+  // Response data
+  providerResponse Json?
+
+  paidAt     DateTime?
+  failedAt   DateTime?
+  refundedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([transactionId])
+  @@index([sepayOrderCode])
+  @@index([status])
+  @@map("payments")
+}
+
+enum OrderStatus {
+  PENDING // Chờ thanh toán
+  PROCESSING // Đang xử lý thanh toán
+  PAID // Đã thanh toán
+  CONFIRMED // Đã xác nhận
+  SHIPPING // Đang giao hàng
+  DELIVERED // Đã giao hàng
+  CANCELLED // Đã hủy
+  REFUNDED // Đã hoàn tiền
+  EXPIRED // Hết hạn (15 phút)
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  VIETQR
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model EditLock {
+  id           String   @id @default(uuid())
+  resourceType String   // 'event' | 'product'
+  eventId      String?
+  productId    String?
+  userId       String
+  userEmail    String
+  lockedAt     DateTime @default(now())
+  expiresAt    DateTime
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event   Event?   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId], name: "unique_event_lock")
+  @@unique([productId], name: "unique_product_lock")
+  @@index([eventId])
+  @@index([productId])
+  @@index([expiresAt])
+  @@map("edit_locks")
+}
+
+model EmailLog {
+  id       String  @id @default(uuid())
+  to       String
+  subject  String
+  template String
+  status   String // 'sent' | 'failed'
+  provider String  @default("resend")
+  error    String? @db.Text
+
+  sentAt DateTime @default(now())
+
+  @@index([to])
+  @@index([status])
+  @@map("email_logs")
+}

@@ -1,0 +1,33 @@
+{
+  "not_found": "Voucher not found",
+  "not_active": "This voucher is not active",
+  "expired": "Voucher has expired",
+  "invalid": "Invalid voucher",
+  "min_order_not_met": "Minimum order amount not met (required: {amount})",
+  "not_eligible": "You are not eligible to use this voucher",
+  "already_used": "This voucher has already been used",
+  "usage_limit_reached": "Voucher usage limit reached",
+  "no_vouchers_available": "No vouchers available for issuance",
+  "already_claimed": "You have already claimed this voucher",
+  "code_generation_failed": "Failed to generate voucher code. Please try again later",
+
+  "create_success": "Voucher created successfully",
+  "issue_success": "Voucher issued successfully",
+  "validate_success": "Voucher is valid",
+  "apply_success": "Voucher applied successfully",
+
+  "multi_use_only": "This voucher can only be used multiple times",
+  "single_use_only": "This voucher can only be used once",
+  "max_discount_applied": "Maximum discount amount applied",
+
+  "template_not_found": "Voucher template not found.",
+  "template_not_active": "This voucher template is not active.",
+  "template_sold_out": "This voucher template has been fully issued.",
+  "event_sold_out": "This event has no more vouchers available.",
+  "max_per_user_reached": "You have reached the maximum number of claims for this voucher.",
+  "not_yours": "This voucher does not belong to you.",
+  "cannot_revoke_used": "Used vouchers cannot be revoked.",
+  "template_code_exists": "A voucher template with this code already exists.",
+  "invalid_percentage": "Percentage discount must be between 0 and 100.",
+  "multi_use_requires_max_usage": "Multi-use vouchers must define a maximum usage count."
+}

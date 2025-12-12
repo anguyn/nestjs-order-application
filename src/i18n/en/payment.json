@@ -1,0 +1,10 @@
+{
+  "order_not_found": "Order not found",
+  "not_your_order": "Not your order",
+  "order_already_processed": "Order already processed",
+  "cash_no_payment_creation": "Cash orders do not require payment creation",
+  "cash_no_qr": "Cash orders do not require QR code",
+  "not_found": "Payment not found",
+  "cash_no_payment_record": "Cash orders do not have payment records",
+  "already_verified": "Payment already verified"
+}
