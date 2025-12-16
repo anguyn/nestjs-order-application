@@ -14,7 +14,6 @@ async function bootstrap() {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
 
-  // Security - Relaxed for Scalar
   app.use(
     helmet({
       contentSecurityPolicy: false,
@@ -22,25 +21,20 @@ async function bootstrap() {
     }),
   );
 
-  // Cookie parser
   app.use(cookieParser.default());
 
-  // CORS
   app.enableCors({
     origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
     credentials: true,
   });
 
-  // API Versioning
   app.enableVersioning({
     type: VersioningType.URI,
     defaultVersion: '1',
   });
 
-  // Global prefix
   app.setGlobalPrefix('api');
 
-  // Validation
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -52,10 +46,8 @@ async function bootstrap() {
     }),
   );
 
-  // Global exception filter
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  // Global interceptors
   app.useGlobalInterceptors(new TransformInterceptor());
 
   // ==========================================
@@ -381,9 +373,6 @@ PENDING → PROCESSING → PAID → CONFIRMED → SHIPPING → DELIVERED
 
   const document = SwaggerModule.createDocument(app, config);
 
-  // ==========================================
-  // Swagger UI at /api/docs
-  // ==========================================
   SwaggerModule.setup('api/docs', app, document, {
     swaggerOptions: {
       persistAuthorization: true,
@@ -415,10 +404,6 @@ PENDING → PROCESSING → PAID → CONFIRMED → SHIPPING → DELIVERED
     `,
   });
 
-  // ==========================================
-  // Scalar Documentation at /api
-  // Modern, beautiful API documentation
-  // ==========================================
   const scalarHtml = `
 <!DOCTYPE html>
 <html>
@@ -458,19 +443,16 @@ PENDING → PROCESSING → PAID → CONFIRMED → SHIPPING → DELIVERED
 </html>
   `;
 
-  // Serve Scalar at /api
   app.getHttpAdapter().get('/api', (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(scalarHtml);
   });
 
-  // Serve OpenAPI JSON for Scalar & external tools
   app.getHttpAdapter().get('/api/docs-json', (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.json(document);
   });
 
-  // Serve OpenAPI YAML (optional)
   app.getHttpAdapter().get('/api/docs-yaml', async (req, res) => {
     const yaml = await import('js-yaml');
     res.setHeader('Content-Type', 'text/yaml');

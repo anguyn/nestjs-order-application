@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bull';
 import { PaymentsService } from './payments.service';
+import { PaymentIdempotencyService } from './payment-idempotency.service';
 import { PaymentsController } from './payments.controller';
 import { PaymentsProcessor } from './payments.processor';
 import { PrismaModule } from '@database/prisma.module';
@@ -14,12 +15,15 @@ import { OrdersModule } from '@modules/orders/orders.module';
     RedisModule,
     NotificationsModule,
     OrdersModule,
-    BullModule.registerQueue({
-      name: 'payment-processing',
-    }),
+    BullModule.registerQueue(
+      {
+        name: 'payment-processing',
+      },
+      { name: 'order-expiry' },
+    ),
   ],
   controllers: [PaymentsController],
-  providers: [PaymentsService, PaymentsProcessor],
-  exports: [PaymentsService],
+  providers: [PaymentsService, PaymentsProcessor, PaymentIdempotencyService],
+  exports: [PaymentsService, PaymentIdempotencyService],
 })
 export class PaymentsModule {}

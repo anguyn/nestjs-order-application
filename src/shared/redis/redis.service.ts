@@ -3,10 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { REDIS_CLIENT } from '../constants/global.constant';
 
-const PAYMENT_ACTIVE_KEY = 'payment:active'; // Set of active payment sessions
-const PAYMENT_WAITING_KEY = 'payment:waiting'; // List of waiting orders
-const PAYMENT_SESSION_PREFIX = 'payment:session:'; // Hash for session data
-const PAYMENT_EXPIRE_SECONDS = 900; // 15 minutes
+const PAYMENT_ACTIVE_KEY = 'payment:active';
+const PAYMENT_WAITING_KEY = 'payment:waiting';
+const PAYMENT_SESSION_PREFIX = 'payment:session:';
+const PAYMENT_EXPIRE_SECONDS = 900;
 
 @Injectable()
 export class RedisService {
@@ -16,13 +16,6 @@ export class RedisService {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly config: ConfigService,
   ) {}
-
-  /**
-   * ==========================================
-   * PAYMENT QUEUE - NEW ARCHITECTURE
-   * ==========================================
-   */
-
   /**
    * Try to start payment session
    * Returns: { canStart: true, position: null } if can start immediately
@@ -35,7 +28,6 @@ export class RedisService {
   ) {
     const isActive = await this.redis.sismember(PAYMENT_ACTIVE_KEY, orderId);
     if (isActive) {
-      // Already active - check if session still valid
       const session = await this.redis.hgetall(
         `${PAYMENT_SESSION_PREFIX}${orderId}`,
       );
@@ -43,7 +35,6 @@ export class RedisService {
         this.logger.log(`Order ${orderId} already has active session`);
         return { canStart: true, position: null };
       }
-      // Session expired but still in active - cleanup
       this.logger.warn(`Cleaning up expired session for order ${orderId}`);
       await this.redis.srem(PAYMENT_ACTIVE_KEY, orderId);
     }
@@ -51,7 +42,6 @@ export class RedisService {
     const waitingList = await this.redis.lrange(PAYMENT_WAITING_KEY, 0, -1);
     const existingIndex = waitingList.indexOf(orderId);
     if (existingIndex !== -1) {
-      // Already in queue - return position
       this.logger.log(
         `Order ${orderId} already in queue at position ${existingIndex + 1}`,
       );
@@ -61,7 +51,6 @@ export class RedisService {
     const activeCount = await this.redis.scard(PAYMENT_ACTIVE_KEY);
 
     if (activeCount < maxConcurrent) {
-      // Can start immediately
       const startedAtUnix = Math.floor(Date.now() / 1000);
       const expiresAtUnix = startedAtUnix + PAYMENT_EXPIRE_SECONDS;
 
@@ -81,7 +70,6 @@ export class RedisService {
 
       return { canStart: true, position: null };
     } else {
-      // Must wait - add to waiting queue
       await this.redis.rpush(PAYMENT_WAITING_KEY, orderId);
       const position = await this.redis.llen(PAYMENT_WAITING_KEY);
 
@@ -93,11 +81,7 @@ export class RedisService {
     }
   }
 
-  /**
-   * Complete payment session and process next in queue
-   */
   async completePaymentSession(orderId: string, maxConcurrent: number = 1) {
-    // Remove from active
     await this.redis
       .multi()
       .srem(PAYMENT_ACTIVE_KEY, orderId)
@@ -106,7 +90,6 @@ export class RedisService {
 
     this.logger.log(`Payment session completed for order ${orderId}`);
 
-    // Check if can process next
     const activeCount = await this.redis.scard(PAYMENT_ACTIVE_KEY);
 
     if (activeCount < maxConcurrent) {
@@ -121,22 +104,15 @@ export class RedisService {
     return { hasNext: false, nextOrderId: null };
   }
 
-  /**
-   * Cancel/expire payment session
-   */
   async cancelPaymentSession(orderId: string, maxConcurrent: number = 1) {
     return await this.completePaymentSession(orderId, maxConcurrent);
   }
 
-  /**
-   * Get waiting position for order
-   */
   async getWaitingPosition(orderId: string) {
     const waitingList = await this.redis.lrange(PAYMENT_WAITING_KEY, 0, -1);
     const position = waitingList.indexOf(orderId);
 
     if (position === -1) {
-      // Not in waiting queue - check if active
       const isActive = await this.redis.sismember(PAYMENT_ACTIVE_KEY, orderId);
       if (isActive) {
         return { status: 'ACTIVE', position: 0, total: waitingList.length };
@@ -146,14 +122,11 @@ export class RedisService {
 
     return {
       status: 'WAITING',
-      position: position + 1, // 1-indexed
+      position: position + 1,
       total: waitingList.length,
     };
   }
 
-  /**
-   * Get queue stats
-   */
   async getPaymentQueueStats() {
     const [activeCount, waitingCount] = await Promise.all([
       this.redis.scard(PAYMENT_ACTIVE_KEY),
@@ -167,9 +140,6 @@ export class RedisService {
     };
   }
 
-  /**
-   * Remove order from waiting queue (when user cancels)
-   */
   async removeFromWaitingQueue(orderId: string) {
     const removed = await this.redis.lrem(PAYMENT_WAITING_KEY, 0, orderId);
     this.logger.log(
@@ -178,16 +148,10 @@ export class RedisService {
     return removed > 0;
   }
 
-  /**
-   * Check if payment session is active
-   */
   async isPaymentSessionActive(orderId: string) {
     return (await this.redis.sismember(PAYMENT_ACTIVE_KEY, orderId)) === 1;
   }
 
-  /**
-   * Get payment session data
-   */
   async getPaymentSession(orderId: string): Promise<{
     userId: string;
     startedAt: string;
@@ -216,10 +180,6 @@ export class RedisService {
     };
   }
 
-  /**
-   * Cleanup expired sessions (called by cron)
-   * Returns list of expired orderIds
-   */
   async cleanupExpiredSessions() {
     const activeSessions = await this.redis.smembers(PAYMENT_ACTIVE_KEY);
     const expiredOrders: string[] = [];
@@ -230,7 +190,6 @@ export class RedisService {
       );
 
       if (!exists) {
-        // Session expired but still in active set - cleanup
         await this.redis.srem(PAYMENT_ACTIVE_KEY, orderId);
         expiredOrders.push(orderId);
         this.logger.warn(`Cleaned up expired session for order ${orderId}`);
@@ -240,19 +199,14 @@ export class RedisService {
     return expiredOrders;
   }
 
-  /**
-   * Clear all payment queue (admin only)
-   */
   async clearPaymentQueue() {
     const activeSessions = await this.redis.smembers(PAYMENT_ACTIVE_KEY);
     const waitingOrders = await this.redis.lrange(PAYMENT_WAITING_KEY, 0, -1);
 
-    // Delete all active sessions
     for (const orderId of activeSessions) {
       await this.redis.del(`${PAYMENT_SESSION_PREFIX}${orderId}`);
     }
 
-    // Clear Redis keys
     await this.redis.del(PAYMENT_ACTIVE_KEY);
     await this.redis.del(PAYMENT_WAITING_KEY);
 

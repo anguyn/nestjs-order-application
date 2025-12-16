@@ -9,6 +9,8 @@ import type { Queue } from 'bull';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@database/prisma.service';
 import { VoucherInstancesService } from '../voucher-instances/voucher-instances.service';
+import { StockReservationService } from '@shared/redis/stock-reservation.service';
+import type { ReservationItem } from '@shared/redis/stock-reservation.service';
 import {
   buildPaginatedResult,
   calculateSkip,
@@ -26,7 +28,7 @@ import {
 } from '@generated/prisma/client';
 import { PAGINATION, FIELDS } from '@shared/constants/global.constant';
 
-const SHIPPING_FEE = 30000; // Default shipping fee
+const SHIPPING_FEE = 30000;
 
 interface OrderItem {
   productId: string;
@@ -44,8 +46,10 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly i18n: I18nService,
     private readonly voucherInstancesService: VoucherInstancesService,
+    private readonly stockReservation: StockReservationService,
     private readonly config: ConfigService,
     @InjectQueue('email') private emailQueue: Queue,
+    @InjectQueue('order-expiry') private orderExpiryQueue: Queue,
   ) {
     this.orderExpiryMinutes = this.config.get<number>(
       'ORDER_EXPIRY_MINUTES',
@@ -59,7 +63,6 @@ export class OrdersService {
 
   async createOrder(userId: string, dto: CreateOrderDto, lang = 'en') {
     return await this.prisma.$transaction(async (tx) => {
-      // 1. Validate address (addressText OR addressId required)
       if (!dto.addressText && !dto.addressId) {
         throw new BadRequestException(
           this.i18n.translate('order.address_required', { lang }),
@@ -71,10 +74,7 @@ export class OrdersService {
 
       if (dto.addressId) {
         selectedAddress = await tx.address.findFirst({
-          where: {
-            id: dto.addressId,
-            userId,
-          },
+          where: { id: dto.addressId, userId },
         });
 
         if (!selectedAddress) {
@@ -83,20 +83,16 @@ export class OrdersService {
           );
         }
 
-        // Generate addressText from Address model if not provided
         if (!finalAddressText) {
           finalAddressText = `${selectedAddress.fullName}, ${selectedAddress.phone}, ${selectedAddress.address}, ${selectedAddress.ward}, ${selectedAddress.district}, ${selectedAddress.city}`;
         }
       }
 
-      // 2. Get cart with items
       const cart = await tx.cart.findUnique({
         where: { userId },
         include: {
           items: {
-            include: {
-              product: true,
-            },
+            include: { product: true },
           },
         },
       });
@@ -107,21 +103,12 @@ export class OrdersService {
         );
       }
 
-      // 3. Validate stock and calculate subtotal
       let subtotal = 0;
       const orderItems: OrderItem[] = [];
+      const reservationItems: ReservationItem[] = [];
 
       for (const item of cart.items) {
         const product = item.product;
-
-        if (product.stock < item.quantity) {
-          throw new BadRequestException(
-            this.i18n.translate('product.insufficient_stock', {
-              lang,
-              args: { name: product.name },
-            }),
-          );
-        }
 
         if (product.status !== ProductStatus.ACTIVE) {
           throw new BadRequestException(
@@ -142,20 +129,21 @@ export class OrdersService {
           quantity: item.quantity,
           subtotal: itemSubtotal,
         });
+
+        reservationItems.push({
+          productId: product.id,
+          quantity: item.quantity,
+        });
       }
 
-      // 4. Calculate shipping
       const shippingFee = SHIPPING_FEE;
       let shippingDiscount = 0;
 
-      // 5. Apply vouchers
-      let productDiscount = 0; // Discount on products
+      let productDiscount = 0;
       const voucherCodes = dto.voucherCodes || [];
 
-      // Create order first to get orderId
       const orderNumber = this.generateOrderNumber();
 
-      // Set expiry for VIETQR and BANK_TRANSFER only
       let expiresAt: Date | null = null;
       if (
         dto.paymentMethod === 'VIETQR' ||
@@ -172,9 +160,9 @@ export class OrdersService {
           addressId: dto.addressId || null,
           addressText: finalAddressText,
           subtotal: subtotal,
-          discountAmount: 0, // Will update after applying vouchers
+          discountAmount: 0,
           shippingFee: shippingFee,
-          shippingDiscount: 0, // Will update if FREE_SHIPPING voucher
+          shippingDiscount: 0,
           totalAmount: subtotal + shippingFee,
           status: OrderStatus.PENDING,
           paymentMethod: dto.paymentMethod,
@@ -184,92 +172,195 @@ export class OrdersService {
         },
       });
 
-      // Apply each voucher
-      for (const code of voucherCodes) {
-        const voucherResult = await this.voucherInstancesService.applyVoucher(
-          code,
-          subtotal,
-          userId,
+      try {
+        const reserved = await this.stockReservation.reserveStock(
           order.id,
-          tx,
-          lang,
+          reservationItems,
         );
 
-        // Check if FREE_SHIPPING voucher
-        if (
-          voucherResult.voucher.template.discountType ===
-          DiscountType.FREE_SHIPPING
-        ) {
-          // Apply to shipping fee
-          const maxShippingDiscount = Math.min(
-            Number(voucherResult.voucher.template.discountValue),
-            shippingFee - shippingDiscount,
+        if (!reserved.success) {
+          await tx.order.delete({ where: { id: order.id } });
+
+          const failedProductNames = await Promise.all(
+            (reserved.failedProducts || []).map(async (id) => {
+              const p = await tx.product.findUnique({ where: { id } });
+              return p?.name || id;
+            }),
           );
-          shippingDiscount += maxShippingDiscount;
-        } else {
-          // Regular discount on products
-          productDiscount += voucherResult.discount;
+
+          throw new BadRequestException(
+            this.i18n.translate('product.insufficient_stock', {
+              lang,
+              args: { name: failedProductNames.join(', ') },
+            }),
+          );
         }
+
+        for (const code of voucherCodes) {
+          const voucherResult = await this.voucherInstancesService.applyVoucher(
+            code,
+            subtotal,
+            userId,
+            order.id,
+            tx,
+            lang,
+          );
+
+          if (
+            voucherResult.voucher.template.discountType ===
+            DiscountType.FREE_SHIPPING
+          ) {
+            const maxShippingDiscount = Math.min(
+              Number(voucherResult.voucher.template.discountValue),
+              shippingFee - shippingDiscount,
+            );
+            shippingDiscount += maxShippingDiscount;
+          } else {
+            productDiscount += voucherResult.discount;
+          }
+        }
+
+        const finalShippingFee = Math.max(0, shippingFee - shippingDiscount);
+        const totalAmount = subtotal - productDiscount + finalShippingFee;
+
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            discountAmount: productDiscount,
+            shippingDiscount: shippingDiscount,
+            totalAmount: totalAmount,
+          },
+        });
+
+        await tx.orderItem.createMany({
+          data: orderItems.map((item) => ({
+            ...item,
+            orderId: order.id,
+          })),
+        });
+
+        await tx.cartItem.deleteMany({
+          where: { cartId: cart.id },
+        });
+
+        if (expiresAt) {
+          const delayMs = expiresAt.getTime() - Date.now();
+
+          await this.orderExpiryQueue.add(
+            'expire-order',
+            { orderId: order.id },
+            {
+              delay: delayMs,
+              jobId: `expire-${order.id}`,
+              removeOnComplete: true,
+              removeOnFail: false,
+            },
+          );
+        }
+
+        const fullOrder = await tx.order.findUnique({
+          where: { id: order.id },
+          include: {
+            items: { include: { product: true } },
+            address: true,
+            user: {
+              select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                language: true,
+              },
+            },
+          },
+        });
+
+        return fullOrder;
+      } catch (error) {
+        await this.stockReservation.releaseReservation(order.id);
+        throw error;
       }
+    });
+  }
 
-      // 6. Calculate final totals
-      const finalShippingFee = Math.max(0, shippingFee - shippingDiscount);
-      const totalAmount = subtotal - productDiscount + finalShippingFee;
-
-      // Update order with final amounts
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          discountAmount: productDiscount,
-          shippingDiscount: shippingDiscount,
-          totalAmount: totalAmount,
+  async cancelOrder(orderId: string, userId: string, lang = 'en') {
+    return await this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findFirst({
+        where: { id: orderId, userId },
+        include: {
+          items: true,
+          voucherUsages: {
+            include: { voucherInstance: true },
+          },
         },
       });
 
-      // 7. Create order items
-      await tx.orderItem.createMany({
-        data: orderItems.map((item) => ({
-          ...item,
-          orderId: order.id,
-        })),
-      });
+      if (!order) {
+        throw new NotFoundException(
+          this.i18n.translate('order.not_found', { lang }),
+        );
+      }
 
-      // 8. Update product stock
-      for (const item of cart.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: { decrement: item.quantity } },
+      if (order.status !== OrderStatus.PENDING) {
+        throw new BadRequestException(
+          this.i18n.translate('order.cannot_cancel', { lang }),
+        );
+      }
+
+      await this.stockReservation.releaseReservation(order.id);
+
+      for (const usage of order.voucherUsages) {
+        const instance = usage.voucherInstance;
+        await tx.voucherInstance.update({
+          where: { id: instance.id },
+          data: {
+            usedCount: { decrement: 1 },
+            status: instance.usedCount - 1 === 0 ? 'ACTIVE' : instance.status,
+          },
         });
       }
 
-      // 9. Clear cart
-      await tx.cartItem.deleteMany({
-        where: { cartId: cart.id },
-      });
-
-      // Get full order with relations
-      const fullOrder = await tx.order.findUnique({
-        where: { id: order.id },
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: OrderStatus.CANCELLED,
+          cancelledAt: new Date(),
+        },
         include: {
-          items: {
-            include: {
-              product: true,
-            },
-          },
+          items: { include: { product: true } },
           address: true,
-          user: {
-            select: {
-              id: true,
-              email: true,
-              firstName: true,
-              lastName: true,
-              language: true,
-            },
-          },
         },
       });
 
-      return fullOrder;
+      await this.orderExpiryQueue
+        .removeJobs(`expire-${orderId}`)
+        .catch(() => {});
+
+      return updatedOrder;
+    });
+  }
+
+  async confirmOrderStock(orderId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    await this.stockReservation.confirmSale(orderId);
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of order.items) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            stock: { decrement: item.quantity },
+          },
+        });
+      }
     });
   }
 
@@ -283,11 +374,7 @@ export class OrdersService {
     } = query;
 
     const where: any = { userId };
-
-    if (status) {
-      where.status = status;
-    }
-
+    if (status) where.status = status;
     const skip = calculateSkip(page, limit);
 
     const [orders, total] = await Promise.all([
@@ -297,11 +384,7 @@ export class OrdersService {
         take: limit,
         orderBy: { [sortBy]: sortOrder },
         include: {
-          items: {
-            include: {
-              product: true,
-            },
-          },
+          items: { include: { product: true } },
           address: true,
         },
       }),
@@ -321,11 +404,7 @@ export class OrdersService {
     } = query;
 
     const where: any = {};
-
-    if (status) {
-      where.status = status;
-    }
-
+    if (status) where.status = status;
     const skip = calculateSkip(page, limit);
 
     const [orders, total] = await Promise.all([
@@ -335,11 +414,7 @@ export class OrdersService {
         take: limit,
         orderBy: { [sortBy]: sortOrder },
         include: {
-          items: {
-            include: {
-              product: true,
-            },
-          },
+          items: { include: { product: true } },
           address: true,
           user: {
             select: {
@@ -359,26 +434,18 @@ export class OrdersService {
 
   async getOrderById(orderId: string, userId?: string, lang = 'en') {
     const where: any = { id: orderId };
-    if (userId) {
-      where.userId = userId;
-    }
+    if (userId) where.userId = userId;
 
     const order = await this.prisma.order.findFirst({
       where,
       include: {
-        items: {
-          include: {
-            product: true,
-          },
-        },
+        items: { include: { product: true } },
         address: true,
         payment: true,
         voucherUsages: {
           include: {
             voucherInstance: {
-              include: {
-                template: true,
-              },
+              include: { template: true },
             },
           },
         },
@@ -402,77 +469,6 @@ export class OrdersService {
     return order;
   }
 
-  async cancelOrder(orderId: string, userId: string, lang = 'en') {
-    return await this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findFirst({
-        where: {
-          id: orderId,
-          userId,
-        },
-        include: {
-          items: true,
-          voucherUsages: {
-            include: {
-              voucherInstance: true,
-            },
-          },
-        },
-      });
-
-      if (!order) {
-        throw new NotFoundException(
-          this.i18n.translate('order.not_found', { lang }),
-        );
-      }
-
-      if (order.status !== OrderStatus.PENDING) {
-        throw new BadRequestException(
-          this.i18n.translate('order.cannot_cancel', { lang }),
-        );
-      }
-
-      // Restore product stock
-      for (const item of order.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stock: { increment: item.quantity } },
-        });
-      }
-
-      // Restore voucher instance usage
-      for (const usage of order.voucherUsages) {
-        const instance = usage.voucherInstance;
-
-        await tx.voucherInstance.update({
-          where: { id: instance.id },
-          data: {
-            usedCount: { decrement: 1 },
-            status: instance.usedCount - 1 === 0 ? 'ACTIVE' : instance.status,
-          },
-        });
-      }
-
-      // Update order status
-      const updatedOrder = await tx.order.update({
-        where: { id: orderId },
-        data: {
-          status: OrderStatus.CANCELLED,
-          cancelledAt: new Date(),
-        },
-        include: {
-          items: {
-            include: {
-              product: true,
-            },
-          },
-          address: true,
-        },
-      });
-
-      return updatedOrder;
-    });
-  }
-
   async updateOrderStatus(
     orderId: string,
     dto: UpdateOrderStatusDto,
@@ -480,9 +476,7 @@ export class OrdersService {
   ) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: {
-        user: true,
-      },
+      include: { user: true },
     });
 
     if (!order) {
@@ -491,13 +485,8 @@ export class OrdersService {
       );
     }
 
-    const updateData: any = {
-      status: dto.status,
-    };
-
-    if (dto.adminNote) {
-      updateData.adminNote = dto.adminNote;
-    }
+    const updateData: any = { status: dto.status };
+    if (dto.adminNote) updateData.adminNote = dto.adminNote;
 
     if (dto.status === OrderStatus.CONFIRMED && !order.confirmedAt) {
       updateData.confirmedAt = new Date();
@@ -513,11 +502,7 @@ export class OrdersService {
       where: { id: orderId },
       data: updateData,
       include: {
-        items: {
-          include: {
-            product: true,
-          },
-        },
+        items: { include: { product: true } },
         address: true,
         user: {
           select: {

@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@database/prisma.service';
+import { StockReservationService } from '@shared/redis/stock-reservation.service';
+import { VoucherClaimService } from '@modules/voucher-instances/voucher-claim.service';
+import { PaymentIdempotencyService } from '@modules/payments/payment-idempotency.service';
 import { RedisService } from '@shared/redis/redis.service';
 import { NotificationsGateway } from '@modules/notifications/notifications.gateway';
 import { OrderStatus, PaymentStatus } from '@generated/prisma/client';
@@ -10,24 +13,37 @@ import { OrderStatus, PaymentStatus } from '@generated/prisma/client';
 export class CleanupService {
   private readonly logger = new Logger(CleanupService.name);
   private readonly maxConcurrentPayments: number;
+  private readonly orderExpiryMinutes: number;
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly stockReservation: StockReservationService,
+    private readonly voucherClaim: VoucherClaimService,
+    private readonly paymentIdempotency: PaymentIdempotencyService,
     private readonly redis: RedisService,
     private readonly notifications: NotificationsGateway,
     private readonly config: ConfigService,
   ) {
-    this.maxConcurrentPayments = this.config.get('MAX_CONCURRENT_PAYMENTS', 1);
+    this.maxConcurrentPayments = this.config.get('PAYMENT_CONCURRENCY', 1);
+    this.orderExpiryMinutes = this.config.get('ORDER_EXPIRY_MINUTES', 15);
   }
 
-  /**
-   * Cleanup expired payment sessions
-   * Runs every minute to ensure timely processing
-   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async cleanupExpiredStockReservations() {
+    try {
+      const cleaned = await this.stockReservation.cleanupExpiredReservations();
+
+      if (cleaned > 0) {
+        this.logger.log(`Cleaned up ${cleaned} expired stock reservations`);
+      }
+    } catch (error) {
+      this.logger.error('Failed to cleanup stock reservations:', error);
+    }
+  }
+
   @Cron(CronExpression.EVERY_MINUTE)
   async cleanupExpiredPaymentSessions() {
     try {
-      // Find expired sessions from Redis
       const expiredOrders = await this.redis.cleanupExpiredSessions();
 
       for (const orderId of expiredOrders) {
@@ -35,7 +51,6 @@ export class CleanupService {
           `Processing expired payment session for order ${orderId}`,
         );
 
-        // Update payment status
         const payment = await this.prisma.payment.findUnique({
           where: { orderId },
           include: { order: true },
@@ -74,7 +89,6 @@ export class CleanupService {
             this.logger.log(
               `Notifying next user for order ${result.nextOrderId}`,
             );
-
             await this.notifications.notifyYourTurn(nextOrder.userId, {
               orderId: result.nextOrderId,
             });
@@ -92,93 +106,195 @@ export class CleanupService {
     }
   }
 
-  /**
-   * Cleanup expired orders (15 minutes)
-   * Runs every 5 minutes
-   */
-  @Cron('*/5 * * * *')
-  async cleanupExpiredOrders() {
-    this.logger.log('Starting cleanup of expired orders...');
+  @Cron('*/10 * * * *')
+  async syncRedisStockWithDB() {
+    this.logger.log('Starting Redis-DB stock sync...');
 
     try {
-      const expiredOrders = await this.prisma.order.findMany({
-        where: {
-          status: OrderStatus.PENDING,
-          expiresAt: {
-            lt: new Date(),
+      const products = await this.prisma.product.findMany({
+        select: { id: true, stock: true },
+      });
+
+      for (const product of products) {
+        const reservedResult = await this.prisma.orderItem.aggregate({
+          where: {
+            productId: product.id,
+            order: { status: { in: ['PENDING', 'PROCESSING'] } },
           },
-        },
-        include: {
-          items: true,
-          voucherUsages: {
-            include: {
-              voucherInstance: true,
+          _sum: { quantity: true },
+        });
+        const reserved = reservedResult._sum.quantity || 0;
+
+        const soldResult = await this.prisma.orderItem.aggregate({
+          where: {
+            productId: product.id,
+            order: {
+              status: { in: ['PAID', 'CONFIRMED', 'SHIPPING', 'DELIVERED'] },
             },
           },
-          payment: true,
+          _sum: { quantity: true },
+        });
+        const sold = soldResult._sum.quantity || 0;
+
+        const available = product.stock - (reserved + sold);
+
+        await this.stockReservation.syncStockFromDB(
+          product.id,
+          available,
+          sold,
+          reserved,
+        );
+      }
+    } catch (error) {
+      this.logger.error('Failed to sync Redis stock:', error);
+    }
+  }
+
+  @Cron('*/15 * * * *')
+  async syncVoucherCountersWithDB() {
+    this.logger.log('Starting voucher counter sync...');
+
+    try {
+      const templates = await this.prisma.voucherTemplate.findMany({
+        where: {
+          isActive: true,
+        },
+        include: {
+          event: true,
         },
       });
 
-      for (const order of expiredOrders) {
-        await this.prisma.$transaction(async (tx) => {
-          // Restore product stock
-          for (const item of order.items) {
-            await tx.product.update({
-              where: { id: item.productId },
-              data: { stock: { increment: item.quantity } },
-            });
-          }
-
-          // Restore voucher instances
-          for (const usage of order.voucherUsages) {
-            const instance = usage.voucherInstance;
-
-            await tx.voucherInstance.update({
-              where: { id: instance.id },
-              data: {
-                usedCount: { decrement: 1 },
-                status:
-                  instance.usedCount - 1 === 0 ? 'ACTIVE' : instance.status,
-              },
-            });
-          }
-
-          // Update order status
-          await tx.order.update({
-            where: { id: order.id },
-            data: { status: OrderStatus.EXPIRED },
-          });
-
-          // Update payment if exists
-          if (order.payment && order.payment.status === PaymentStatus.PENDING) {
-            await tx.payment.update({
-              where: { id: order.payment.id },
-              data: {
-                status: PaymentStatus.FAILED,
-                metadata: {
-                  ...((order.payment.metadata as any) || {}),
-                  failedReason: 'Order expired',
-                },
-              },
-            });
-          }
-        });
-
-        // Remove from payment queue
-        await this.redis.removeFromWaitingQueue(order.id);
-        await this.redis.cancelPaymentSession(
-          order.id,
-          this.maxConcurrentPayments,
-        );
-
-        this.logger.log(
-          `Expired order ${order.orderNumber} and restored stock`,
+      for (const template of templates) {
+        await this.voucherClaim.syncCountersFromDB(
+          template.id,
+          template.eventId,
+          template.issuedCount,
+          template.maxIssue,
+          template.event.issuedCount,
+          template.event.maxVouchers,
         );
       }
 
-      this.logger.log(`Processed ${expiredOrders.length} expired orders`);
+      this.logger.log(`Synced ${templates.length} voucher templates`);
     } catch (error) {
-      this.logger.error('Failed to cleanup expired orders:', error);
+      this.logger.error('Failed to sync voucher counters:', error);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_HOUR)
+  async detectInconsistencies() {
+    this.logger.log('Checking for Redis-DB inconsistencies...');
+
+    try {
+      const products = await this.prisma.product.findMany({
+        select: { id: true, stock: true },
+      });
+
+      let stockInconsistencies = 0;
+
+      for (const product of products) {
+        const redisStock = await this.stockReservation.getStockStatus(
+          product.id,
+        );
+        const dbTotal = product.stock;
+        const redisTotal =
+          redisStock.available + redisStock.reserved + redisStock.sold;
+        const diff = Math.abs(dbTotal - redisTotal);
+
+        if (diff > 0) {
+          this.logger.warn(
+            `Stock inconsistency for ${product.id}: DB=${dbTotal}, Redis=${redisTotal}, diff=${diff}`,
+          );
+          stockInconsistencies++;
+
+          const reservedResult = await this.prisma.orderItem.aggregate({
+            where: {
+              productId: product.id,
+              order: { status: { in: ['PENDING', 'PROCESSING'] } },
+            },
+            _sum: { quantity: true },
+          });
+          const reserved = reservedResult._sum.quantity || 0;
+
+          const soldResult = await this.prisma.orderItem.aggregate({
+            where: {
+              productId: product.id,
+              order: {
+                status: { in: ['PAID', 'CONFIRMED', 'SHIPPING', 'DELIVERED'] },
+              },
+            },
+            _sum: { quantity: true },
+          });
+          const sold = soldResult._sum.quantity || 0;
+
+          const available = product.stock - (reserved + sold);
+
+          await this.stockReservation.syncStockFromDB(
+            product.id,
+            available,
+            sold,
+            reserved,
+          );
+        }
+      }
+
+      // Check voucher inconsistencies
+      const templates = await this.prisma.voucherTemplate.findMany({
+        where: { isActive: true },
+        include: { event: true },
+      });
+
+      let voucherInconsistencies = 0;
+
+      for (const template of templates) {
+        const redisCounters = await this.voucherClaim.getCounters(
+          template.id,
+          template.eventId,
+        );
+
+        const dbTemplateRemaining = template.maxIssue - template.issuedCount;
+        const dbEventRemaining =
+          template.event.maxVouchers - template.event.issuedCount;
+
+        const templateDiff = Math.abs(
+          dbTemplateRemaining - redisCounters.templateRemaining,
+        );
+        const eventDiff = Math.abs(
+          dbEventRemaining - redisCounters.eventRemaining,
+        );
+
+        if (templateDiff > 0 || eventDiff > 0) {
+          this.logger.warn(
+            `Voucher inconsistency for ${template.id}: Template diff=${templateDiff}, Event diff=${eventDiff}`,
+          );
+          voucherInconsistencies++;
+
+          await this.voucherClaim.syncCountersFromDB(
+            template.id,
+            template.eventId,
+            template.issuedCount,
+            template.maxIssue,
+            template.event.issuedCount,
+            template.event.maxVouchers,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Inconsistency check: ${stockInconsistencies} stock, ${voucherInconsistencies} voucher issues fixed`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to detect inconsistencies:', error);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  async cleanupIdempotencyKeys() {
+    try {
+      const cleaned = await this.paymentIdempotency.cleanup();
+      this.logger.log(`Cleaned up ${cleaned} old idempotency keys`);
+    } catch (error) {
+      this.logger.error('Failed to cleanup idempotency keys:', error);
     }
   }
 
@@ -198,6 +314,54 @@ export class CleanupService {
       this.logger.log(`Cleaned up ${result.count} expired refresh tokens`);
     } catch (error) {
       this.logger.error('Failed to cleanup refresh tokens:', error);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_6_HOURS)
+  async cleanupExpiredPasswordResetTokens() {
+    this.logger.log('Starting cleanup of expired password reset tokens...');
+
+    try {
+      const result = await this.prisma.user.updateMany({
+        where: {
+          resetPasswordExpiry: { lt: new Date() },
+          resetPasswordToken: { not: null },
+        },
+        data: {
+          resetPasswordToken: null,
+          resetPasswordExpiry: null,
+        },
+      });
+
+      this.logger.log(
+        `Cleaned up ${result.count} expired password reset tokens`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to cleanup password reset tokens:', error);
+    }
+  }
+
+  @Cron(CronExpression.EVERY_6_HOURS)
+  async cleanupExpiredEmailVerificationTokens() {
+    this.logger.log('Starting cleanup of expired email verification tokens...');
+
+    try {
+      const result = await this.prisma.user.updateMany({
+        where: {
+          emailVerifyExpiry: { lt: new Date() },
+          emailVerifyToken: { not: null },
+        },
+        data: {
+          emailVerifyToken: null,
+          emailVerifyExpiry: null,
+        },
+      });
+
+      this.logger.log(
+        `Cleaned up ${result.count} expired email verification tokens`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to cleanup email verification tokens:', error);
     }
   }
 
@@ -240,84 +404,6 @@ export class CleanupService {
       this.logger.log(`Marked ${result.count} voucher instances as expired`);
     } catch (error) {
       this.logger.error('Failed to mark expired voucher instances:', error);
-    }
-  }
-
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
-  async cleanupOldEmailLogs() {
-    this.logger.log('Starting cleanup of old email logs...');
-
-    try {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-      const result = await this.prisma.emailLog.deleteMany({
-        where: {
-          sentAt: {
-            lt: thirtyDaysAgo,
-          },
-        },
-      });
-
-      this.logger.log(`Cleaned up ${result.count} old email logs`);
-    } catch (error) {
-      this.logger.error('Failed to cleanup email logs:', error);
-    }
-  }
-
-  @Cron(CronExpression.EVERY_6_HOURS)
-  async cleanupExpiredPasswordResetTokens() {
-    this.logger.log('Starting cleanup of expired password reset tokens...');
-
-    try {
-      const result = await this.prisma.user.updateMany({
-        where: {
-          resetPasswordExpiry: {
-            lt: new Date(),
-          },
-          resetPasswordToken: {
-            not: null,
-          },
-        },
-        data: {
-          resetPasswordToken: null,
-          resetPasswordExpiry: null,
-        },
-      });
-
-      this.logger.log(
-        `Cleaned up ${result.count} expired password reset tokens`,
-      );
-    } catch (error) {
-      this.logger.error('Failed to cleanup password reset tokens:', error);
-    }
-  }
-
-  @Cron(CronExpression.EVERY_6_HOURS)
-  async cleanupExpiredEmailVerificationTokens() {
-    this.logger.log('Starting cleanup of expired email verification tokens...');
-
-    try {
-      const result = await this.prisma.user.updateMany({
-        where: {
-          emailVerifyExpiry: {
-            lt: new Date(),
-          },
-          emailVerifyToken: {
-            not: null,
-          },
-        },
-        data: {
-          emailVerifyToken: null,
-          emailVerifyExpiry: null,
-        },
-      });
-
-      this.logger.log(
-        `Cleaned up ${result.count} expired email verification tokens`,
-      );
-    } catch (error) {
-      this.logger.error('Failed to cleanup email verification tokens:', error);
     }
   }
 

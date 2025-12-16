@@ -48,7 +48,6 @@ export function generatePrefixedVoucherCode(
     const randomIndex = Math.floor(Math.random() * characters.length);
     code += characters[randomIndex];
 
-    // Add hyphen every 4 characters
     if ((i + 1) % 4 === 0 && i + 1 < length) {
       code += '-';
     }
@@ -61,7 +60,6 @@ export function generatePrefixedVoucherCode(
  * Validate voucher code format
  */
 export function isValidVoucherCodeFormat(code: string): boolean {
-  // Check basic format: XXX-XXXX-XXXX or similar patterns
   const pattern = /^[A-Z0-9]{3,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}$/;
   return pattern.test(code);
 }

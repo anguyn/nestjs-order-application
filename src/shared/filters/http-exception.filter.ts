@@ -39,12 +39,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       );
     }
 
-    // Log error
     this.logger.error(
       `${request.method} ${request.url} - Status: ${status} - Message: ${JSON.stringify(message)}`,
     );
 
-    // Send response
     response.status(status).json({
       success: false,
       statusCode: status,

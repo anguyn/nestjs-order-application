@@ -161,7 +161,6 @@ export class UsersService {
       data: { password: hashedPassword },
     });
 
-    // Revoke all refresh tokens
     await this.prisma.refreshToken.deleteMany({
       where: { userId },
     });
@@ -264,7 +263,6 @@ export class UsersService {
       },
     });
 
-    // If deactivating, revoke all tokens
     if (!dto.isActive) {
       await this.prisma.refreshToken.deleteMany({
         where: { userId },
@@ -296,7 +294,6 @@ export class UsersService {
       data: { password: hashedPassword },
     });
 
-    // Revoke all refresh tokens
     await this.prisma.refreshToken.deleteMany({
       where: { userId },
     });

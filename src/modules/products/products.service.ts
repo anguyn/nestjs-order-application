@@ -262,7 +262,6 @@ export class ProductsService {
     //   );
     // }
 
-    // Check if product is in any orders
     const orderCount = await this.prisma.orderItem.count({
       where: { productId },
     });
@@ -273,14 +272,12 @@ export class ProductsService {
       );
     }
 
-    // Check edit lock
     await this.checkEditLock(productId, userId, lang);
 
     await this.prisma.product.delete({
       where: { id: productId },
     });
 
-    // Clean up edit lock
     await this.prisma.editLock.deleteMany({
       where: {
         resourceType: 'product',

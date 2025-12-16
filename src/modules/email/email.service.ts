@@ -43,12 +43,8 @@ export class EmailService {
     this.resend = new Resend(apiKey);
   }
 
-  // ==========================================
-  // CORE EMAIL SENDING
-  // ==========================================
   async sendEmail(dto: SendEmailDto): Promise<void> {
     try {
-      // Replace template variables
       const html = dto.html
         .replace(/{{APP_URL}}/g, this.app.frontendUrl)
         .replace(/{{API_URL}}/g, this.app.apiUrl);
@@ -62,39 +58,16 @@ export class EmailService {
 
       if (error) {
         this.logger.error(`Failed to send email to ${dto.to}:`, error);
-        await this.logEmail(
-          dto.to,
-          dto.subject,
-          dto.template || 'generic',
-          'failed',
-          error.message,
-        );
         throw error;
       }
 
       this.logger.log(`Email sent successfully to ${dto.to} (ID: ${data?.id})`);
-      await this.logEmail(
-        dto.to,
-        dto.subject,
-        dto.template || 'generic',
-        'sent',
-      );
     } catch (error) {
       this.logger.error(`Email sending error:`, error);
-      await this.logEmail(
-        dto.to,
-        dto.subject,
-        dto.template || 'generic',
-        'failed',
-        error.message,
-      );
       throw error;
     }
   }
 
-  // ==========================================
-  // WELCOME EMAIL
-  // ==========================================
   async sendWelcomeEmail(
     email: string,
     firstName: string,
@@ -116,9 +89,6 @@ export class EmailService {
     });
   }
 
-  // ==========================================
-  // EMAIL VERIFICATION
-  // ==========================================
   async sendVerificationEmail(
     email: string,
     firstName: string,
@@ -149,9 +119,6 @@ export class EmailService {
     });
   }
 
-  // ==========================================
-  // PASSWORD RESET
-  // ==========================================
   async sendPasswordResetEmail(
     email: string,
     firstName: string,
@@ -180,9 +147,6 @@ export class EmailService {
     });
   }
 
-  // ==========================================
-  // ORDER CONFIRMATION
-  // ==========================================
   async sendOrderConfirmationEmail(
     email: string,
     orderNumber: string,
@@ -204,9 +168,6 @@ export class EmailService {
     });
   }
 
-  // ==========================================
-  // PAYMENT CONFIRMED
-  // ==========================================
   async sendPaymentConfirmedEmail(
     email: string,
     orderNumber: string,
@@ -226,31 +187,5 @@ export class EmailService {
       html,
       template: 'payment-confirmed',
     });
-  }
-
-  // ==========================================
-  // EMAIL LOGGING
-  // ==========================================
-  private async logEmail(
-    to: string,
-    subject: string,
-    template: string,
-    status: string,
-    error?: string,
-  ): Promise<void> {
-    try {
-      await this.prisma.emailLog.create({
-        data: {
-          to,
-          subject,
-          template,
-          status,
-          error,
-          provider: 'resend',
-        },
-      });
-    } catch (err) {
-      this.logger.error('Failed to log email:', err);
-    }
   }
 }

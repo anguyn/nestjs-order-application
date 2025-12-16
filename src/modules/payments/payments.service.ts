@@ -3,37 +3,47 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  Inject,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bull';
+import type { Queue } from 'bull';
 import { ConfigService } from '@nestjs/config';
+import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
+import { Logger as WTLogger } from 'winston';
 import { I18nService } from 'nestjs-i18n';
 import { PrismaService } from '@database/prisma.service';
 import { RedisService } from '@shared/redis/redis.service';
+import { StockReservationService } from '@shared/redis/stock-reservation.service';
+import { PaymentIdempotencyService } from './payment-idempotency.service';
 import { NotificationsGateway } from '@modules/notifications/notifications.gateway';
 import { PaymentStatus, PaymentMethod } from '@generated/prisma/client';
 import * as crypto from 'crypto';
 import * as QRCode from 'qrcode';
+import { OrdersService } from '@modules/orders/orders.service';
 
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
   private readonly maxConcurrentPayments: number;
+  private readonly orderExpiryMinutes: number;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly stockReservation: StockReservationService,
+    private readonly paymentIdempotency: PaymentIdempotencyService,
+    private readonly ordersService: OrdersService,
     private readonly notifications: NotificationsGateway,
     private readonly i18n: I18nService,
+    @Inject(WINSTON_MODULE_PROVIDER) private readonly wtLogger: WTLogger,
+    @InjectQueue('order-expiry') private readonly orderExpiryQueue: Queue,
   ) {
-    this.maxConcurrentPayments = this.config.get('MAX_CONCURRENT_PAYMENTS', 1);
+    this.maxConcurrentPayments = this.config.get('PAYMENT_CONCURRENCY', 1);
+    this.orderExpiryMinutes = this.config.get('ORDER_EXPIRY_MINUTES', 15);
   }
 
-  /**
-   * Initiate payment - join queue or start session
-   * CHỈ TẠO PAYMENT KHI ĐẾN LƯỢT (ACTIVE), KHÔNG TẠO KHI ĐANG CHỜ
-   */
   async initiatePayment(orderId: string, userId: string, lang = 'en') {
-    // Validate order
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { user: true },
@@ -63,7 +73,6 @@ export class PaymentsService {
       );
     }
 
-    // Try to start payment session
     const queueResult = await this.redis.tryStartPaymentSession(
       orderId,
       userId,
@@ -71,12 +80,64 @@ export class PaymentsService {
     );
 
     if (queueResult.canStart) {
+      const newExpiry = new Date();
+      newExpiry.setMinutes(newExpiry.getMinutes() + this.orderExpiryMinutes);
+
+      await this.prisma.order.update({
+        where: { id: orderId },
+        data: { expiresAt: newExpiry },
+      });
+
+      this.logger.log(
+        `Order ${orderId} expiry extended to ${newExpiry.toISOString()}`,
+      );
+
+      this.wtLogger.info('Order expiry extended', {
+        service: 'payment',
+        orderId,
+        oldExpiry: order.expiresAt?.toISOString(),
+        newExpiry: newExpiry.toISOString(),
+      });
+
+      try {
+        await this.orderExpiryQueue.removeJobs(`expire-${orderId}`);
+        this.wtLogger.info('Cancelled old expiry job', {
+          service: 'payment',
+          orderId,
+        });
+      } catch (error) {
+        this.wtLogger.warn('Failed to remove old expiry job', {
+          service: 'payment',
+          orderId,
+          error: error.message,
+        });
+      }
+
+      const delay = newExpiry.getTime() - Date.now();
+      if (delay > 0) {
+        await this.orderExpiryQueue.add(
+          'expire-order',
+          { orderId },
+          {
+            delay,
+            jobId: `expire-${orderId}`,
+            removeOnComplete: true,
+          },
+        );
+
+        this.wtLogger.info('Rescheduled expiry job', {
+          service: 'payment',
+          orderId,
+          delayMs: delay,
+          willExpireAt: newExpiry.toISOString(),
+        });
+      }
+
       let payment = await this.prisma.payment.findUnique({
         where: { orderId },
       });
 
       if (!payment) {
-        // Tạo mới payment
         payment = await this.prisma.payment.create({
           data: {
             orderId,
@@ -90,7 +151,6 @@ export class PaymentsService {
           `Created new payment ${payment.id} for order ${orderId}`,
         );
       } else if (payment.status === PaymentStatus.FAILED) {
-        // Reset payment cũ để tái sử dụng
         payment = await this.prisma.payment.update({
           where: { id: payment.id },
           data: {
@@ -104,7 +164,6 @@ export class PaymentsService {
         });
         this.logger.log(`Reset payment ${payment.id} for retry`);
       }
-      // Nếu payment.status === PENDING/PROCESSING/COMPLETED thì giữ nguyên
 
       this.logger.log(`Payment session started for order ${orderId}`);
 
@@ -114,12 +173,10 @@ export class PaymentsService {
         queuePosition: null,
       };
     } else {
-      // ❌ Phải đợi - KHÔNG TẠO PAYMENT
       this.logger.log(
         `Order ${orderId} waiting at position ${queueResult.position}`,
       );
 
-      // Notify user of queue position
       if (queueResult.position) {
         await this.notifications.notifyQueueUpdate(userId, {
           orderId,
@@ -128,7 +185,6 @@ export class PaymentsService {
         });
       }
 
-      // Trả về payment cũ nếu có (để UI biết), nhưng không tạo mới
       const existingPayment = await this.prisma.payment.findUnique({
         where: { orderId },
       });
@@ -143,10 +199,8 @@ export class PaymentsService {
 
   /**
    * Generate QR code for active payment session
-   * CHỈ TẠO QR KHI SESSION ĐANG ACTIVE
    */
   async generateQRCode(orderId: string, userId: string, lang = 'en') {
-    // Check if session is active
     const isActive = await this.redis.isPaymentSessionActive(orderId);
 
     if (!isActive) {
@@ -175,7 +229,6 @@ export class PaymentsService {
       );
     }
 
-    // Get session data for remaining time
     const session = await this.redis.getPaymentSession(orderId);
 
     if (!session) {
@@ -225,7 +278,6 @@ export class PaymentsService {
       where: { orderId },
     });
 
-    // Check queue status
     const queueInfo = await this.redis.getWaitingPosition(orderId);
     const session = await this.redis.getPaymentSession(orderId);
 
@@ -248,36 +300,117 @@ export class PaymentsService {
     };
   }
 
-  /**
-   * Handle webhook - payment confirmed
-   */
   async handleWebhook(body: any, signature: string) {
+    const requestId = `wh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    this.logger.log('Webhook received');
+
+    this.wtLogger.info('Webhook received', {
+      service: 'webhook',
+      requestId,
+      body,
+      signature,
+      receivedAt: new Date().toISOString(),
+    });
+
     const isValid = this.verifySignature(body, signature);
-    console.log('Test: ', signature);
+
     if (!isValid) {
+      this.logger.error('Invalid webhook signature');
+
+      this.wtLogger.error('Invalid webhook signature', {
+        service: 'webhook',
+        requestId,
+        signature,
+      });
+
       throw new BadRequestException('Invalid signature');
     }
 
-    const { transferAmount, content, when } = body;
+    const { transferAmount, content, when, transactionId } = body;
+
+    const orderId = this.extractOrderId(content);
+    if (!orderId) {
+      this.logger.warn('Cannot extract order ID from content:', content);
+      this.wtLogger.warn('Cannot extract order ID from content', {
+        service: 'webhook',
+        requestId,
+        content,
+      });
+      return { success: false, message: 'Invalid content' };
+    }
+
+    const shouldProcess = await this.paymentIdempotency.checkAndMarkProcessed(
+      orderId,
+      transactionId || `${Date.now()}`,
+    );
+
+    if (!shouldProcess) {
+      this.logger.warn(
+        `Duplicate webhook detected for order ${orderId}, transaction ${transactionId}`,
+      );
+
+      this.wtLogger.warn('Duplicate webhook detected', {
+        service: 'webhook',
+        requestId,
+        orderId,
+        transactionId,
+        action: 'skipped',
+      });
+
+      return { success: true, message: 'Already processed' };
+    }
 
     const orderNumber = this.extractOrderNumber(content);
     if (!orderNumber) {
       this.logger.warn('Cannot extract order number from content:', content);
+      this.wtLogger.warn('Cannot extract order number', {
+        service: 'webhook',
+        requestId,
+        content,
+      });
+
+      await this.paymentIdempotency.markAsFailed(
+        orderId,
+        transactionId || `${Date.now()}`,
+        'Invalid content',
+      );
       return { success: false, message: 'Invalid content' };
     }
 
     const order = await this.prisma.order.findFirst({
       where: { orderNumber },
-      include: { payment: true, user: true },
+      include: { payment: true, user: true, items: true },
     });
 
     if (!order) {
       this.logger.warn('Order not found:', orderNumber);
+      this.wtLogger.warn('Order not found', {
+        service: 'webhook',
+        requestId,
+        orderNumber,
+      });
+
+      await this.paymentIdempotency.markAsFailed(
+        orderId,
+        transactionId || `${Date.now()}`,
+        'Order not found',
+      );
       return { success: false, message: 'Order not found' };
     }
 
     if (!order.payment) {
       this.logger.warn('Payment not found for order:', orderNumber);
+      this.wtLogger.warn('Payment not found for order', {
+        service: 'webhook',
+        requestId,
+        orderNumber,
+      });
+      await this.paymentIdempotency.markAsFailed(
+        order.id,
+        transactionId || `${Date.now()}`,
+        'Payment not found',
+      );
       return { success: false, message: 'Payment not found' };
     }
 
@@ -286,61 +419,127 @@ export class PaymentsService {
         expected: order.totalAmount,
         received: transferAmount,
       });
-      return { success: false, message: 'Amount mismatch' };
-    }
-
-    // Update payment and order
-    await this.prisma.$transaction([
-      this.prisma.payment.update({
-        where: { id: order.payment.id },
-        data: {
-          status: PaymentStatus.COMPLETED,
-          paidAt: new Date(when),
-          metadata: {
-            ...((order.payment.metadata as any) || {}),
-            webhookReceivedAt: new Date().toISOString(),
-            content,
-          },
-        },
-      }),
-      this.prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'PAID',
-          paidAt: new Date(when),
-        },
-      }),
-    ]);
-
-    // Complete payment session and process next in queue
-    const result = await this.redis.completePaymentSession(
-      order.id,
-      this.maxConcurrentPayments,
-    );
-
-    // Notify user
-    await this.notifications.notifyPaymentConfirmed(order.userId, {
-      orderId: order.id,
-      amount: transferAmount,
-      order: order,
-    });
-
-    // If there's next person in queue, notify them
-    if (result.hasNext && result.nextOrderId) {
-      const nextOrder = await this.prisma.order.findUnique({
-        where: { id: result.nextOrderId },
+      this.wtLogger.error('Amount mismatch detected', {
+        service: 'webhook',
+        requestId,
+        orderNumber,
+        expected: Number(order.totalAmount),
+        received: Number(transferAmount),
+        difference: Number(transferAmount) - Number(order.totalAmount),
       });
 
-      if (nextOrder) {
-        await this.notifications.notifyYourTurn(nextOrder.userId, {
-          orderId: result.nextOrderId,
-        });
-      }
+      await this.paymentIdempotency.markAsFailed(
+        order.id,
+        transactionId || `${Date.now()}`,
+        'Amount mismatch',
+      );
+
+      await this.prisma.paymentDispute.create({
+        data: {
+          orderId: order.id,
+          expectedAmount: order.totalAmount,
+          receivedAmount: transferAmount,
+          transactionId,
+          content,
+          reason: 'AMOUNT_MISMATCH',
+          webhookBody: body,
+          status: 'PENDING',
+        },
+      });
+
+      await this.notifications.sendToAll('admin:payment-dispute', {
+        type: 'AMOUNT_MISMATCH',
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        expected: Number(order.totalAmount),
+        received: Number(transferAmount),
+      });
+
+      return { success: false, message: 'Amount mismatch - dispute created' };
     }
 
-    this.logger.log(`Payment confirmed for order ${orderNumber}`);
+    try {
+      await this.ordersService.confirmOrderStock(order.id);
 
-    return { success: true, message: 'Payment confirmed' };
+      await this.prisma.$transaction([
+        this.prisma.payment.update({
+          where: { id: order.payment.id },
+          data: {
+            status: PaymentStatus.COMPLETED,
+            paidAt: new Date(when),
+            metadata: {
+              ...((order.payment.metadata as any) || {}),
+              webhookReceivedAt: new Date().toISOString(),
+              content,
+              transactionId,
+              requestId,
+            },
+          },
+        }),
+        this.prisma.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'PAID',
+            paidAt: new Date(when),
+          },
+        }),
+      ]);
+
+      const result = await this.redis.completePaymentSession(
+        order.id,
+        this.maxConcurrentPayments,
+      );
+
+      await this.orderExpiryQueue
+        .removeJobs(`expire-${order.id}`)
+        .catch(() => {});
+
+      await this.notifications.notifyPaymentConfirmed(order.userId, {
+        orderId: order.id,
+        amount: transferAmount,
+        order: order,
+      });
+
+      if (result.hasNext && result.nextOrderId) {
+        const nextOrder = await this.prisma.order.findUnique({
+          where: { id: result.nextOrderId },
+        });
+
+        if (nextOrder) {
+          await this.notifications.notifyYourTurn(nextOrder.userId, {
+            orderId: result.nextOrderId,
+          });
+        }
+      }
+
+      this.logger.log(`Payment confirmed for order ${orderNumber}`);
+
+      this.wtLogger.info('Webhook processed successfully', {
+        service: 'webhook',
+        requestId,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        amount: transferAmount,
+        transactionId,
+      });
+
+      return { success: true, message: 'Payment confirmed' };
+    } catch (error) {
+      this.logger.error('Error processing webhook:', error);
+      this.wtLogger.error('Error processing webhook', {
+        service: 'webhook',
+        requestId,
+        orderId: order.id,
+        error: error.message,
+        stack: error.stack,
+      });
+      await this.paymentIdempotency.markAsFailed(
+        order.id,
+        transactionId || `${Date.now()}`,
+        'Error processing webhook',
+      );
+      throw error;
+    }
   }
 
   /**
@@ -357,14 +556,14 @@ export class PaymentsService {
       );
     }
 
-    // Remove from queue/session
+    await this.stockReservation.releaseReservation(orderId);
+
     await this.redis.removeFromWaitingQueue(orderId);
     const result = await this.redis.cancelPaymentSession(
       orderId,
       this.maxConcurrentPayments,
     );
 
-    // Update payment status if exists and pending
     const payment = await this.prisma.payment.findUnique({
       where: { orderId },
     });
@@ -383,7 +582,6 @@ export class PaymentsService {
       });
     }
 
-    // Process next in queue if any
     if (result.hasNext && result.nextOrderId) {
       const nextOrder = await this.prisma.order.findUnique({
         where: { id: result.nextOrderId },
@@ -420,6 +618,8 @@ export class PaymentsService {
       );
     }
 
+    await this.ordersService.confirmOrderStock(payment.orderId);
+
     await this.prisma.$transaction([
       this.prisma.payment.update({
         where: { id: paymentId },
@@ -442,11 +642,14 @@ export class PaymentsService {
       }),
     ]);
 
-    // Complete session and process next
     const result = await this.redis.completePaymentSession(
       payment.orderId,
       this.maxConcurrentPayments,
     );
+
+    await this.orderExpiryQueue
+      .removeJobs(`expire-${payment.orderId}`)
+      .catch(() => {});
 
     await this.notifications.notifyPaymentConfirmed(payment.order.userId, {
       orderId: payment.orderId,
@@ -485,13 +688,14 @@ export class PaymentsService {
 
     for (const orderId of expiredOrders) {
       try {
+        await this.stockReservation.releaseReservation(orderId);
+
         const payment = await this.prisma.payment.findUnique({
           where: { orderId },
           include: { order: { include: { user: true } } },
         });
 
         if (payment && payment.status === PaymentStatus.PENDING) {
-          // Update payment to cancelled
           await this.prisma.payment.update({
             where: { id: payment.id },
             data: {
@@ -505,13 +709,11 @@ export class PaymentsService {
             },
           });
 
-          // Notify user
           await this.notifications.notifySessionExpired(payment.order.userId, {
             orderId,
           });
         }
 
-        // Process next in queue
         const result = await this.redis.completePaymentSession(
           orderId,
           this.maxConcurrentPayments,
@@ -543,6 +745,13 @@ export class PaymentsService {
 
   private verifySignature(body: any, signature: string): boolean {
     const secret = this.config.get('SEPAY_SECRET_KEY');
+    if (!secret) {
+      this.logger.warn('SEPAY_SECRET_KEY not configured');
+      this.wtLogger.warn(
+        'SEPAY_SECRET_KEY not configured - skipping signature verification',
+      );
+      return true;
+    }
     const data = JSON.stringify(body);
     const hash = crypto.createHmac('sha256', secret).update(data).digest('hex');
     return hash === signature;
@@ -551,5 +760,13 @@ export class PaymentsService {
   private extractOrderNumber(content: string): string | null {
     const match = content.match(/ORDER-\d{8}-\d{4}/);
     return match ? match[0] : null;
+  }
+
+  private extractOrderId(content: string): string | null {
+    const orderNumber = this.extractOrderNumber(content);
+    if (orderNumber) {
+      return orderNumber;
+    }
+    return content;
   }
 }

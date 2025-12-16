@@ -50,7 +50,6 @@ export class OrdersController {
   ) {
     const order = await this.ordersService.createOrder(user.id, dto, lang);
 
-    // Queue confirmation email
     await this.ordersService.queueOrderConfirmationEmail(order);
 
     return order;

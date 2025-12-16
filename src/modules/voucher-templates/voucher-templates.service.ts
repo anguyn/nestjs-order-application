@@ -49,7 +49,6 @@ export class VoucherTemplatesService {
       }
     }
 
-    // Validate discount type and value
     if (dto.discountType === DiscountType.PERCENTAGE) {
       if (dto.discountValue > 100 || dto.discountValue < 0) {
         throw new BadRequestException(
@@ -58,14 +57,12 @@ export class VoucherTemplatesService {
       }
     }
 
-    // FREE_SHIPPING should have reasonable value
     if (dto.discountType === DiscountType.FREE_SHIPPING) {
       if (dto.discountValue <= 0) {
         throw new BadRequestException(
           'FREE_SHIPPING discount value must be positive',
         );
       }
-      // maxDiscountAmount doesn't apply to FREE_SHIPPING
       if (dto.maxDiscountAmount) {
         throw new BadRequestException(
           'maxDiscountAmount is not applicable for FREE_SHIPPING vouchers',
@@ -127,7 +124,6 @@ export class VoucherTemplatesService {
       );
     }
 
-    // Validate discount type and value
     if (dto.discountType === DiscountType.PERCENTAGE && dto.discountValue) {
       if (dto.discountValue > 100 || dto.discountValue < 0) {
         throw new BadRequestException(

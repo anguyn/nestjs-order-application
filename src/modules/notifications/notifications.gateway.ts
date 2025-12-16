@@ -39,7 +39,6 @@ export class NotificationsGateway
   afterInit(server: Server) {
     this.logger.log('WebSocket Gateway initialized');
 
-    // Start queue monitoring
     this.startQueueMonitoring();
   }
 
@@ -49,7 +48,6 @@ export class NotificationsGateway
       let token: string | undefined;
 
       if (cookies) {
-        // Parse cookies manually
         const cookieArray = cookies.split(';');
         for (const cookie of cookieArray) {
           const [name, value] = cookie.trim().split('=');
@@ -60,7 +58,6 @@ export class NotificationsGateway
         }
       }
 
-      // Fallback: check auth header
       if (!token) {
         token =
           client.handshake.auth.token ||
@@ -161,7 +158,7 @@ export class NotificationsGateway
       } catch (error) {
         this.logger.error('Queue monitoring error:', error);
       }
-    }, 5000); // Update every 5 seconds
+    }, 5000);
   }
 
   private async getQueueStats() {
@@ -303,8 +300,6 @@ export class NotificationsGateway
       message: `New order received: ${orderData.orderNumber}`,
     });
   }
-
-  // Add these methods to NotificationsGateway
 
   /**
    * Notify user their position in queue changed

@@ -32,6 +32,12 @@ export enum Permission {
   // Payment
   PAYMENT_VERIFY = 'payment:verify',
   PAYMENT_QUEUE_CLEAR = 'payment:queue:clear',
+
+  // Admin
+  ADMIN_JOB_VIEW = 'admin:job:view',
+  ADMIN_JOB_RETRY = 'admin:job:retry',
+  ADMIN_JOB_CLEAN = 'admin:job:clean',
+  ADMIN_JOB_MANAGE = 'admin:job:manage',
 }
 
 export const ROLE_PERMISSIONS = {

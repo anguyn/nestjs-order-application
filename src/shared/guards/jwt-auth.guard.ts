@@ -16,7 +16,6 @@ import { Response } from 'express';
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   private callCounter = 0;
-  // Track refresh operations per user to prevent duplicates
   private refreshingUsers = new Set<string>();
 
   constructor(
@@ -62,7 +61,6 @@ export class JwtAuthGuard implements CanActivate {
 
         const autoRefresh = this.configService.get<boolean>('jwt.autoRefresh');
 
-        // Background refresh: only if token expires soon AND not already refreshing
         if (
           autoRefresh &&
           expiresIn < 300 &&
@@ -130,12 +128,10 @@ export class JwtAuthGuard implements CanActivate {
         secret: this.configService.get<string>('jwt.refreshSecret'),
       });
 
-      // Check if already refreshing for this user
       if (this.refreshingUsers.has(payload.sub)) {
         console.log(
           `⏳ [GUARD #${callId}] Already refreshing for user ${payload.sub}, waiting...`,
         );
-        // Wait a bit and retry
         await new Promise((resolve) => setTimeout(resolve, 100));
         return this.tryRefreshToken(
           request,
@@ -164,19 +160,15 @@ export class JwtAuthGuard implements CanActivate {
           );
         }
 
-        // Generate new tokens
         const { accessToken: newAccessToken, refreshToken: newRefreshToken } =
           await this.generateTokenPair(storedToken.user, storedToken);
 
-        // Set cookies
         this.setAuthCookies(response, newAccessToken, newRefreshToken);
 
-        // Update request cookies for current request
         request.cookies = request.cookies || {};
         request.cookies.accessToken = newAccessToken;
         request.cookies.refreshToken = newRefreshToken;
 
-        // Delete old refresh token
         await this.prisma.refreshToken.delete({
           where: { id: storedToken.id },
         });
@@ -205,7 +197,6 @@ export class JwtAuthGuard implements CanActivate {
     request: any,
     userId: string,
   ): Promise<void> {
-    // Check if already refreshing
     if (this.refreshingUsers.has(userId)) {
       console.log(
         `⏭️  [BACKGROUND #${callId}] Skip: already refreshing user ${userId}`,
@@ -234,19 +225,15 @@ export class JwtAuthGuard implements CanActivate {
         return;
       }
 
-      // Generate new tokens
       const { accessToken: newAccessToken, refreshToken: newRefreshToken } =
         await this.generateTokenPair(storedToken.user, storedToken);
 
-      // Set cookies
       this.setAuthCookies(response, newAccessToken, newRefreshToken);
 
-      // Update request cookies for current request
       request.cookies = request.cookies || {};
       request.cookies.accessToken = newAccessToken;
       request.cookies.refreshToken = newRefreshToken;
 
-      // Delete old refresh token
       await this.prisma.refreshToken.delete({
         where: { id: storedToken.id },
       });
@@ -282,7 +269,6 @@ export class JwtAuthGuard implements CanActivate {
       expiresIn: this.configService.get<string>('jwt.refreshTokenExpiry'),
     } as any);
 
-    // Create new refresh token in DB
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
@@ -336,7 +322,12 @@ export class JwtAuthGuard implements CanActivate {
     refreshToken: string,
   ) {
     const isProduction = process.env.NODE_ENV === 'production';
-    const cookieOptions = {
+    const cookieOptions: {
+      httpOnly: boolean;
+      secure: boolean;
+      sameSite: 'strict' | 'lax';
+      path: string;
+    } = {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? 'strict' : 'lax',

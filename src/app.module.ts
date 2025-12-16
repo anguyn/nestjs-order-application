@@ -37,7 +37,10 @@ import { PaymentsModule } from '@modules/payments/payments.module';
 import { EmailModule } from '@modules/email/email.module';
 import { EditLocksModule } from '@modules/edit-locks/edit-locks.module';
 import { HealthModule } from '@modules/health/health.module';
+import { WinstonModule } from 'nest-winston';
+import { JobManagementModule } from '@modules/job-management/job-management.module';
 
+import { winstonConfig } from '@config/logger.config';
 import jwtConfig from '@config/jwt.config';
 import databaseConfig from '@config/database.config';
 import redisConfig from '@config/redis.config';
@@ -47,13 +50,11 @@ import { CleanupService } from './jobs/cleanup.service';
 
 @Module({
   imports: [
-    // Configuration
     ConfigModule.forRoot({
       isGlobal: true,
       load: [jwtConfig, databaseConfig, redisConfig, emailConfig],
       envFilePath: ['.env.local', '.env'],
     }),
-
     JwtModule.registerAsync({
       global: true,
       useFactory: (configService: ConfigService) =>
@@ -65,34 +66,27 @@ import { CleanupService } from './jobs/cleanup.service';
         }) as any,
       inject: [ConfigService],
     }),
-
     PrismaModule,
     RedisModule,
     NotificationsModule,
-
     BullModule.forRootAsync({
       useFactory: () => ({
         redis: {
           host: process.env.REDIS_HOST || 'localhost',
           port: parseInt(process.env.REDIS_PORT || '6379', 10),
           password: process.env.REDIS_PASSWORD,
+          db: parseInt(process.env.REDIS_DB ?? '1', 10),
           // tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
         },
       }),
     }),
-
-    // Rate Limiting
     ThrottlerModule.forRoot([
       {
         ttl: parseInt(process.env.RATE_LIMIT_TTL || '60', 10),
         limit: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
       },
     ]),
-
-    // Scheduling
     ScheduleModule.forRoot(),
-
-    // GraphQL
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
       // autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
@@ -108,8 +102,6 @@ import { CleanupService } from './jobs/cleanup.service';
         };
       },
     }),
-
-    // Internationalization
     I18nModule.forRoot({
       fallbackLanguage: 'en',
       loaderOptions: {
@@ -122,6 +114,8 @@ import { CleanupService } from './jobs/cleanup.service';
         new HeaderResolver(['x-lang']),
       ],
     }),
+    WinstonModule.forRoot(winstonConfig),
+    JobManagementModule,
 
     AuthModule,
     UsersModule,

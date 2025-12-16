@@ -7,3 +7,5 @@ export const FIELDS = {
 };
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
+
+export const SHIPPING_FEE = 30000;

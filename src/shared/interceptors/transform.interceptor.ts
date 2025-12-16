@@ -30,12 +30,10 @@ export class TransformInterceptor<T> implements NestInterceptor<
         const response = ctx.getResponse();
         const statusCode = response.statusCode;
 
-        // If data is already formatted, return as is
         if (data && typeof data === 'object' && 'success' in data) {
           return data;
         }
 
-        // Extract message and data
         let message: string | undefined;
         let responseData: T;
 

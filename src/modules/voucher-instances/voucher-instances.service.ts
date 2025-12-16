@@ -6,12 +6,12 @@ import {
 } from '@nestjs/common';
 import { I18nService } from 'nestjs-i18n';
 import { PrismaService } from '@database/prisma.service';
+import { VoucherClaimService } from './voucher-claim.service';
 import { generateVoucherCode } from '@shared/utils/voucher.util';
 import {
   buildPaginatedResult,
   calculateSkip,
 } from '@shared/utils/pagination.util';
-import { PAGINATION } from '@shared/constants/global.constant';
 import { Prisma } from '@generated/prisma/client';
 import {
   ClaimVoucherDto,
@@ -24,13 +24,14 @@ import {
   DiscountType,
 } from '../voucher-templates/dto/voucher-templates.dto';
 
-const SHIPPING_FEE = 30000; // Default shipping fee
+import { PAGINATION, SHIPPING_FEE } from '@shared/constants/global.constant';
 
 @Injectable()
 export class VoucherInstancesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly i18n: I18nService,
+    private readonly voucherClaim: VoucherClaimService,
   ) {}
 
   async claimVoucher(userId: string, dto: ClaimVoucherDto, lang = 'en') {
@@ -72,16 +73,16 @@ export class VoucherInstancesService {
         );
       }
 
-      if (template.issuedCount >= template.maxIssue) {
-        throw new ConflictException(
-          this.i18n.translate('voucher.template_sold_out', { lang }),
-        );
-      }
+      const claimResult = await this.voucherClaim.attemptClaim(
+        template.id,
+        template.eventId,
+        userId,
+        template.maxPerUser || 0,
+        lang,
+      );
 
-      if (event.issuedCount >= event.maxVouchers) {
-        throw new ConflictException(
-          this.i18n.translate('voucher.event_sold_out', { lang }),
-        );
+      if (!claimResult.canClaim) {
+        throw new ConflictException(claimResult.reason);
       }
 
       if (template.type === VoucherType.SPECIFIC_USER) {
@@ -89,23 +90,14 @@ export class VoucherInstancesService {
           template.targetUserIds.length > 0 &&
           !template.targetUserIds.includes(userId)
         ) {
+          await this.voucherClaim.releaseClaim(
+            template.id,
+            template.eventId,
+            userId,
+          );
+
           throw new BadRequestException(
             this.i18n.translate('voucher.not_eligible', { lang }),
-          );
-        }
-      }
-
-      if (template.maxPerUser) {
-        const userClaimCount = await tx.voucherInstance.count({
-          where: {
-            templateId: dto.templateId,
-            userId,
-          },
-        });
-
-        if (userClaimCount >= template.maxPerUser) {
-          throw new ConflictException(
-            this.i18n.translate('voucher.max_per_user_reached', { lang }),
           );
         }
       }
@@ -122,50 +114,66 @@ export class VoucherInstancesService {
       }
 
       if (attempts === 5) {
+        await this.voucherClaim.releaseClaim(
+          template.id,
+          template.eventId,
+          userId,
+        );
+
         throw new ConflictException(
           this.i18n.translate('voucher.code_generation_failed', { lang }),
         );
       }
 
-      await Promise.all([
-        tx.voucherTemplate.update({
-          where: { id: dto.templateId },
-          data: { issuedCount: { increment: 1 } },
-        }),
-        tx.event.update({
-          where: { id: event.id },
-          data: { issuedCount: { increment: 1 } },
-        }),
-      ]);
+      try {
+        await Promise.all([
+          tx.voucherTemplate.update({
+            where: { id: dto.templateId },
+            data: { issuedCount: { increment: 1 } },
+          }),
+          tx.event.update({
+            where: { id: event.id },
+            data: { issuedCount: { increment: 1 } },
+          }),
+        ]);
 
-      const expiresAt = new Date(event.endDate);
-      const instance = await tx.voucherInstance.create({
-        data: {
-          templateId: dto.templateId,
-          userId,
-          code,
-          expiresAt,
-          status: VoucherStatus.ACTIVE,
-          usedCount: 0,
-        },
-        include: {
-          template: {
-            select: {
-              id: true,
-              name: true,
-              description: true,
-              discountType: true,
-              discountValue: true,
-              minOrderAmount: true,
-              maxDiscountAmount: true,
-              type: true,
-              maxUsageCount: true,
+        const expiresAt = new Date(event.endDate);
+        const instance = await tx.voucherInstance.create({
+          data: {
+            templateId: dto.templateId,
+            userId,
+            code,
+            expiresAt,
+            status: VoucherStatus.ACTIVE,
+            usedCount: 0,
+          },
+          include: {
+            template: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                discountType: true,
+                discountValue: true,
+                minOrderAmount: true,
+                maxDiscountAmount: true,
+                type: true,
+                maxUsageCount: true,
+              },
             },
           },
-        },
-      });
+        });
 
-      return instance;
+        return instance;
+      } catch (error) {
+        await this.voucherClaim.releaseClaim(
+          template.id,
+          template.eventId,
+          userId,
+        );
+
+        throw error;
+      }
     });
   }
 
@@ -241,21 +249,16 @@ export class VoucherInstancesService {
       }
     }
 
-    // Calculate discount based on type
     let discount = 0;
 
     if (template.discountType === DiscountType.FREE_SHIPPING) {
-      // FREE_SHIPPING: discount on shipping fee only
       discount = Math.min(Number(template.discountValue), SHIPPING_FEE);
     } else if (template.discountType === DiscountType.FIXED) {
-      // FIXED: fixed amount discount on products
       discount = Number(template.discountValue);
     } else if (template.discountType === DiscountType.PERCENTAGE) {
-      // PERCENTAGE: percentage discount on products
       discount = (dto.orderAmount * Number(template.discountValue)) / 100;
     }
 
-    // Apply max discount cap (not for FREE_SHIPPING)
     if (
       template.discountType !== DiscountType.FREE_SHIPPING &&
       template.maxDiscountAmount &&
@@ -264,7 +267,6 @@ export class VoucherInstancesService {
       discount = Number(template.maxDiscountAmount);
     }
 
-    // Don't let discount exceed order amount (for product discounts)
     if (
       template.discountType !== DiscountType.FREE_SHIPPING &&
       discount > dto.orderAmount
@@ -282,7 +284,7 @@ export class VoucherInstancesService {
         discountValue: template.discountValue,
       },
       discount,
-      finalAmount: dto.orderAmount - discount, // This is for display only
+      finalAmount: dto.orderAmount - discount,
     };
   }
 
@@ -352,21 +354,16 @@ export class VoucherInstancesService {
       }
     }
 
-    // Calculate discount based on type
     let discount = 0;
 
     if (template.discountType === DiscountType.FREE_SHIPPING) {
-      // FREE_SHIPPING: discount on shipping fee only
       discount = Math.min(Number(template.discountValue), SHIPPING_FEE);
     } else if (template.discountType === DiscountType.FIXED) {
-      // FIXED: fixed amount on products
       discount = Number(template.discountValue);
     } else if (template.discountType === DiscountType.PERCENTAGE) {
-      // PERCENTAGE: percentage on products
       discount = (orderAmount * Number(template.discountValue)) / 100;
     }
 
-    // Apply max discount cap (not for FREE_SHIPPING)
     if (
       template.discountType !== DiscountType.FREE_SHIPPING &&
       template.maxDiscountAmount &&
@@ -375,7 +372,6 @@ export class VoucherInstancesService {
       discount = Number(template.maxDiscountAmount);
     }
 
-    // Don't let product discount exceed order amount
     if (
       template.discountType !== DiscountType.FREE_SHIPPING &&
       discount > orderAmount
@@ -383,7 +379,6 @@ export class VoucherInstancesService {
       discount = orderAmount;
     }
 
-    // Update voucher instance
     const shouldMarkAsUsed =
       template.type === VoucherType.SINGLE_USE ||
       (template.type === VoucherType.MULTI_USE &&
@@ -398,14 +393,13 @@ export class VoucherInstancesService {
       },
     });
 
-    // Record usage
     await tx.voucherUsage.create({
       data: {
         voucherInstanceId: instance.id,
         userId,
         orderId,
         orderAmount,
-        discountApplied: discount, // This is correct now - actual discount amount
+        discountApplied: discount,
       },
     });
 
@@ -502,6 +496,9 @@ export class VoucherInstancesService {
   async revokeVoucher(instanceId: string, lang = 'en') {
     const instance = await this.prisma.voucherInstance.findUnique({
       where: { id: instanceId },
+      include: {
+        template: true,
+      },
     });
 
     if (!instance) {
@@ -515,6 +512,12 @@ export class VoucherInstancesService {
         this.i18n.translate('voucher.cannot_revoke_used', { lang }),
       );
     }
+
+    await this.voucherClaim.releaseClaim(
+      instance.templateId,
+      instance.template.eventId,
+      instance.userId,
+    );
 
     await this.prisma.voucherInstance.update({
       where: { id: instanceId },

@@ -35,7 +35,6 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
   products         Product[]
   events           Event[]
   carts            Cart[]
@@ -133,22 +132,19 @@ model Event {
   title       String
   description String?
 
-  // Thời gian diễn ra event
   startDate DateTime
   endDate   DateTime
 
-  // Quota tổng của event (tổng số voucher có thể phát hành)
   maxVouchers Int
-  issuedCount Int @default(0) // Đếm tổng voucher đã phát (từ TẤT CẢ templates)
+  issuedCount Int @default(0)
 
   isActive  Boolean  @default(true)
   createdBy String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
   creator          User              @relation(fields: [createdBy], references: [id])
-  voucherTemplates VoucherTemplate[] // 1 event có nhiều loại voucher
+  voucherTemplates VoucherTemplate[]
   editLock         EditLock?
 
   @@index([startDate, endDate])
@@ -160,36 +156,30 @@ model VoucherTemplate {
   id      String @id @default(uuid())
   eventId String
 
-  // Metadata
-  name        String // "Voucher giảm 20%", "Free ship cho newbie"
+  name        String
   description String?
-  code        String? @unique // Optional: code chung cho template (FREESHIP2024)
+  code        String? @unique
 
-  // Discount rules
   discountType      DiscountType
   discountValue     Decimal      @db.Decimal(10, 2)
   minOrderAmount    Decimal?     @db.Decimal(10, 2)
   maxDiscountAmount Decimal?     @db.Decimal(10, 2)
 
-  // Usage rules
-  type          VoucherType // SINGLE_USE, MULTI_USE, SPECIFIC_USER
-  maxUsageCount Int? // Null = unlimited cho MULTI_USE
-  maxPerUser    Int? // Giới hạn số lần 1 user có thể claim
+  type          VoucherType
+  maxUsageCount Int?
+  maxPerUser    Int?
 
-  // Quota của riêng template này
-  maxIssue    Int // Số lượng voucher tối đa có thể phát
-  issuedCount Int @default(0) // Đã phát bao nhiêu
+  maxIssue    Int
+  issuedCount Int @default(0)
 
-  // Target users (nếu có)
-  targetUserIds String[] @default([]) // Chỉ những user này mới claim được
+  targetUserIds String[] @default([])
 
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
   event            Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  voucherInstances VoucherInstance[] // Template sinh ra nhiều instances
+  voucherInstances VoucherInstance[]
 
   @@index([eventId])
   @@index([code])
@@ -202,19 +192,15 @@ model VoucherInstance {
   templateId String
   userId     String
 
-  // Unique code cho voucher này
   code String @unique
 
-  // Status
   status    VoucherStatus @default(ACTIVE)
   usedCount Int           @default(0)
 
-  // Timing
   issuedAt   DateTime  @default(now())
   expiresAt  DateTime
   lastUsedAt DateTime?
 
-  // Relations
   template VoucherTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
   user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   usages   VoucherUsage[]
@@ -228,10 +214,10 @@ model VoucherInstance {
 }
 
 enum VoucherStatus {
-  ACTIVE // Còn hạn, chưa dùng hết
-  USED // Đã dùng hết (single-use hoặc multi-use hết lượt)
-  EXPIRED // Hết hạn
-  REVOKED // Bị thu hồi
+  ACTIVE
+  USED
+  EXPIRED
+  REVOKED
 }
 
 model VoucherUsage {
@@ -244,7 +230,6 @@ model VoucherUsage {
 
   usedAt DateTime @default(now())
 
-  // Relations
   voucherInstance VoucherInstance @relation(fields: [voucherInstanceId], references: [id], onDelete: Cascade)
   user            User            @relation(fields: [userId], references: [id])
   order           Order           @relation(fields: [orderId], references: [id])
@@ -298,30 +283,24 @@ model Order {
   orderNumber String @unique
   userId      String
 
-  // Address - flexible: free text (priority) OR selected from saved addresses
-  addressText String? // User types address directly
-  addressId   String? // Optional: if user selects from saved addresses
+  addressText String?
+  addressId   String?
 
-  // Amounts
   subtotal         Decimal @db.Decimal(10, 2)
   discountAmount   Decimal @default(0) @db.Decimal(10, 2)
-  shippingFee      Decimal @default(30000) @db.Decimal(10, 2) // Default 30,000đ
-  shippingDiscount Decimal @default(0) @db.Decimal(10, 2) // FREE_SHIPPING voucher discount
+  shippingFee      Decimal @default(30000) @db.Decimal(10, 2)
+  shippingDiscount Decimal @default(0) @db.Decimal(10, 2)
   totalAmount      Decimal @db.Decimal(10, 2)
 
-  // Status & Payment
   status        OrderStatus   @default(PENDING)
   paymentMethod PaymentMethod // REQUIRED: VIETQR, BANK_TRANSFER, CASH
 
-  // Vouchers
   vouchersApplied String[] @default([])
 
-  // Notes
   customerNote String? @db.Text
   adminNote    String? @db.Text
 
-  // Dates
-  expiresAt   DateTime? // 15 minutes to pay
+  expiresAt   DateTime?
   paidAt      DateTime?
   confirmedAt DateTime?
   shippedAt   DateTime?
@@ -331,12 +310,12 @@ model Order {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations
-  user          User           @relation(fields: [userId], references: [id])
-  address       Address?       @relation(fields: [addressId], references: [id])
-  items         OrderItem[]
-  payment       Payment?
-  voucherUsages VoucherUsage[]
+  user            User             @relation(fields: [userId], references: [id])
+  address         Address?         @relation(fields: [addressId], references: [id])
+  items           OrderItem[]
+  payment         Payment?
+  voucherUsages   VoucherUsage[]
+  paymentDisputes PaymentDispute[]
 
   @@index([userId])
   @@index([orderNumber])
@@ -347,9 +326,9 @@ model Order {
 }
 
 enum DiscountType {
-  FIXED // Giảm số tiền cố định
-  PERCENTAGE // Giảm phần trăm
-  FREE_SHIPPING // Miễn phí ship (chỉ trừ shippingFee)
+  FIXED
+  PERCENTAGE
+  FREE_SHIPPING
 }
 
 model OrderItem {
@@ -378,20 +357,16 @@ model Payment {
   method  PaymentMethod @default(VIETQR)
   status  PaymentStatus @default(PENDING)
 
-  // Payment provider data
   transactionId String? @unique
   providerRef   String?
   metadata      Json?
 
-  // QR Code data
   qrContent  String? @db.Text
   qrImageUrl String?
 
-  // Sepay data
   sepayOrderCode  String? @unique
   sepayGatewayUrl String?
 
-  // Response data
   providerResponse Json?
 
   paidAt     DateTime?
@@ -410,16 +385,38 @@ model Payment {
   @@map("payments")
 }
 
+model PaymentDispute {
+  id             String    @id @default(cuid())
+  orderId        String
+  order          Order     @relation(fields: [orderId], references: [id])
+  expectedAmount Decimal   @db.Decimal(10, 2)
+  receivedAmount Decimal   @db.Decimal(10, 2)
+  transactionId  String?
+  content        String
+  reason         String // AMOUNT_MISMATCH | INVALID_ORDER | DUPLICATE | WRONG_ACCOUNT
+  webhookBody    Json
+  status         String    @default("PENDING") // PENDING | RESOLVED | REFUNDED | REJECTED
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolutionNote String?   @db.Text
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([orderId])
+  @@index([status])
+  @@index([createdAt])
+}
+
 enum OrderStatus {
-  PENDING // Chờ thanh toán
-  PROCESSING // Đang xử lý thanh toán
-  PAID // Đã thanh toán
-  CONFIRMED // Đã xác nhận
-  SHIPPING // Đang giao hàng
-  DELIVERED // Đã giao hàng
-  CANCELLED // Đã hủy
-  REFUNDED // Đã hoàn tiền
-  EXPIRED // Hết hạn (15 phút)
+  PENDING
+  PROCESSING
+  PAID
+  CONFIRMED
+  SHIPPING
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  EXPIRED
 }
 
 enum PaymentMethod {
@@ -438,7 +435,7 @@ enum PaymentStatus {
 
 model EditLock {
   id           String   @id @default(uuid())
-  resourceType String   // 'event' | 'product'
+  resourceType String
   eventId      String?
   productId    String?
   userId       String
@@ -456,20 +453,4 @@ model EditLock {
   @@index([productId])
   @@index([expiresAt])
   @@map("edit_locks")
-}
-
-model EmailLog {
-  id       String  @id @default(uuid())
-  to       String
-  subject  String
-  template String
-  status   String // 'sent' | 'failed'
-  provider String  @default("resend")
-  error    String? @db.Text
-
-  sentAt DateTime @default(now())
-
-  @@index([to])
-  @@index([status])
-  @@map("email_logs")
 }

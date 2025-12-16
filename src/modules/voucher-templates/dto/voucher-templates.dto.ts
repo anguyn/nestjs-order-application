@@ -11,15 +11,15 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum DiscountType {
-  FIXED = 'FIXED', // Giảm số tiền cố định trên sản phẩm
-  PERCENTAGE = 'PERCENTAGE', // Giảm % trên sản phẩm
-  FREE_SHIPPING = 'FREE_SHIPPING', // Miễn phí ship (hoặc giảm phí ship)
+  FIXED = 'FIXED',
+  PERCENTAGE = 'PERCENTAGE',
+  FREE_SHIPPING = 'FREE_SHIPPING',
 }
 
 export enum VoucherType {
-  SINGLE_USE = 'SINGLE_USE', // Dùng 1 lần
-  MULTI_USE = 'MULTI_USE', // Dùng nhiều lần
-  SPECIFIC_USER = 'SPECIFIC_USER', // Chỉ dành cho user cụ thể
+  SINGLE_USE = 'SINGLE_USE',
+  MULTI_USE = 'MULTI_USE',
+  SPECIFIC_USER = 'SPECIFIC_USER',
 }
 
 export class CreateVoucherTemplateDto {

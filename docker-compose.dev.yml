@@ -28,7 +28,8 @@ services:
     image: redis:7-alpine
     container_name: voucher_redis_dev
     restart: unless-stopped
-    command: redis-server --requirepass 123456 --appendonly yes --appendfsync everysec
+    # ✅ FIX: Start with DB 1 as default
+    command: redis-server --requirepass 123456 --appendonly yes --appendfsync everysec --databases 16
     ports:
       - "6379:6379"
     volumes:
@@ -41,13 +42,13 @@ services:
       timeout: 3s
       retries: 5
 
-  # Optional: Redis Commander (GUI for Redis)
+  # Redis Commander - FIX: Connect to DB 1
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: voucher_redis_commander
     restart: unless-stopped
     environment:
-      - REDIS_HOSTS=local:redis:6379:0:123456
+      - REDIS_HOSTS=local:redis:6379:1:123456
     ports:
       - "8081:8081"
     networks:
@@ -55,7 +56,6 @@ services:
     depends_on:
       - redis
 
-  # Optional: pgAdmin (GUI for PostgreSQL)
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: voucher_pgadmin

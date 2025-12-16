@@ -1,6 +1,13 @@
-import { Process, Processor } from '@nestjs/bull';
-import { Logger } from '@nestjs/common';
+import {
+  Processor,
+  Process,
+  OnQueueFailed,
+  OnQueueCompleted,
+} from '@nestjs/bull';
+import { Inject } from '@nestjs/common';
 import type { Job } from 'bull';
+import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
+import { Logger } from 'winston';
 import { EmailService } from './email.service';
 import { Language } from '@generated/prisma/client';
 
@@ -12,14 +19,6 @@ export interface WelcomeEmailJob {
 }
 
 export interface VerificationEmailJob {
-  email: string;
-  firstName: string;
-  lastName: string;
-  token: string;
-  language?: Language;
-}
-
-export interface PasswordResetEmailJob {
   email: string;
   firstName: string;
   lastName: string;
@@ -43,13 +42,20 @@ export interface PaymentConfirmedEmailJob {
 
 @Processor('email')
 export class EmailProcessor {
-  private readonly logger = new Logger(EmailProcessor.name);
-
-  constructor(private readonly emailService: EmailService) {}
+  constructor(
+    private readonly emailService: EmailService,
+    @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
+  ) {}
 
   @Process('send-welcome')
   async handleWelcomeEmail(job: Job<WelcomeEmailJob>) {
-    this.logger.log(`Processing welcome email for ${job.data.email}`);
+    this.logger.info('Processing welcome email', {
+      service: 'job',
+      jobId: job.id,
+      email: job.data.email,
+      attempt: job.attemptsMade + 1,
+    });
+
     try {
       await this.emailService.sendWelcomeEmail(
         job.data.email,
@@ -57,16 +63,33 @@ export class EmailProcessor {
         job.data.lastName,
         job.data.language || Language.EN,
       );
-      this.logger.log(`Welcome email sent to ${job.data.email}`);
+
+      this.logger.info('Welcome email sent successfully', {
+        service: 'job',
+        jobId: job.id,
+        email: job.data.email,
+      });
     } catch (error) {
-      this.logger.error(`Failed to send welcome email:`, error);
+      this.logger.error('Failed to send welcome email', {
+        service: 'job',
+        jobId: job.id,
+        email: job.data.email,
+        attempt: job.attemptsMade + 1,
+        error: error.message,
+        stack: error.stack,
+      });
       throw error;
     }
   }
 
   @Process('send-verification')
   async handleVerificationEmail(job: Job<VerificationEmailJob>) {
-    this.logger.log(`Processing verification email for ${job.data.email}`);
+    this.logger.info('Processing verification email', {
+      service: 'job',
+      jobId: job.id,
+      email: job.data.email,
+    });
+
     try {
       await this.emailService.sendVerificationEmail(
         job.data.email,
@@ -75,36 +98,26 @@ export class EmailProcessor {
         job.data.token,
         job.data.language || Language.EN,
       );
-      this.logger.log(`Verification email sent to ${job.data.email}`);
     } catch (error) {
-      this.logger.error(`Failed to send verification email:`, error);
-      throw error;
-    }
-  }
-
-  @Process('send-password-reset')
-  async handlePasswordResetEmail(job: Job<PasswordResetEmailJob>) {
-    this.logger.log(`Processing password reset email for ${job.data.email}`);
-    try {
-      await this.emailService.sendPasswordResetEmail(
-        job.data.email,
-        job.data.firstName,
-        job.data.lastName,
-        job.data.token,
-        job.data.language || Language.EN,
-      );
-      this.logger.log(`Password reset email sent to ${job.data.email}`);
-    } catch (error) {
-      this.logger.error(`Failed to send password reset email:`, error);
+      this.logger.error('Failed to send verification email', {
+        service: 'job',
+        jobId: job.id,
+        email: job.data.email,
+        error: error.message,
+      });
       throw error;
     }
   }
 
   @Process('send-order-confirmation')
   async handleOrderConfirmationEmail(job: Job<OrderConfirmationEmailJob>) {
-    this.logger.log(
-      `Processing order confirmation email for ${job.data.email}`,
-    );
+    this.logger.info('Processing order confirmation email', {
+      service: 'job',
+      jobId: job.id,
+      email: job.data.email,
+      orderNumber: job.data.orderNumber,
+    });
+
     try {
       await this.emailService.sendOrderConfirmationEmail(
         job.data.email,
@@ -112,16 +125,27 @@ export class EmailProcessor {
         job.data.totalAmount,
         job.data.language || Language.EN,
       );
-      this.logger.log(`Order confirmation email sent to ${job.data.email}`);
     } catch (error) {
-      this.logger.error(`Failed to send order confirmation email:`, error);
+      this.logger.error('Failed to send order confirmation email', {
+        service: 'job',
+        jobId: job.id,
+        email: job.data.email,
+        orderNumber: job.data.orderNumber,
+        error: error.message,
+      });
       throw error;
     }
   }
 
   @Process('send-payment-confirmed')
   async handlePaymentConfirmedEmail(job: Job<PaymentConfirmedEmailJob>) {
-    this.logger.log(`Processing payment confirmed email for ${job.data.email}`);
+    this.logger.info('Processing payment confirmed email', {
+      service: 'job',
+      jobId: job.id,
+      email: job.data.email,
+      orderNumber: job.data.orderNumber,
+    });
+
     try {
       await this.emailService.sendPaymentConfirmedEmail(
         job.data.email,
@@ -129,10 +153,30 @@ export class EmailProcessor {
         job.data.totalAmount,
         job.data.language || Language.EN,
       );
-      this.logger.log(`Payment confirmed email sent to ${job.data.email}`);
     } catch (error) {
-      this.logger.error(`Failed to send payment confirmed email:`, error);
+      this.logger.error('Failed to send payment confirmed email', {
+        service: 'job',
+        jobId: job.id,
+        email: job.data.email,
+        orderNumber: job.data.orderNumber,
+        error: error.message,
+      });
       throw error;
     }
+  }
+
+  @OnQueueCompleted()
+  onCompleted(job: Job) {
+    this.logger.info('Job completed successfully', {
+      service: 'job',
+      queue: 'email',
+      jobId: job.id,
+      jobName: job.name,
+      attempts: job.attemptsMade,
+      duration:
+        job.finishedOn && job.processedOn
+          ? job.finishedOn - job.processedOn
+          : null,
+    });
   }
 }
